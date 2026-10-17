@@ -123,6 +123,17 @@ class TipInputModeManager : public TipInputModeManagerImpl {
   commands::CompositionMode GetTsfConversionMode() const;
 
  private:
+  // mozc-readable: publishes the resulting state to shared memory when a
+  // mutating member function returns.
+  struct PublishOnExit {
+    explicit PublishOnExit(const TipInputModeManager* self) : self(self) {}
+    PublishOnExit(const PublishOnExit&) = delete;
+    PublishOnExit& operator=(const PublishOnExit&) = delete;
+    ~PublishOnExit();
+    const TipInputModeManager* self;
+  };
+  void PublishState() const;
+
   bool use_global_mode_ = false;
   StatePair mozc_state_;
   StatePair tsf_state_;

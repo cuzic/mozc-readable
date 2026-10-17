@@ -40,6 +40,7 @@
 #include "win32/base/conversion_mode_util.h"
 #include "win32/base/indicator_visibility_tracker.h"
 #include "win32/base/keyboard.h"
+#include "win32/tip/tip_state_publisher.h"
 
 namespace mozc {
 namespace win32 {
@@ -164,6 +165,7 @@ TipInputModeManager::Action TipInputModeManager::OnMoveFocusedWindow() {
 TipInputModeManager::NotifyActionSet TipInputModeManager::OnReceiveCommand(
     bool mozc_open_close_mode, commands::CompositionMode mozc_logical_mode,
     commands::CompositionMode mozc_visible_mode) {
+  const PublishOnExit publish_on_exit(this);
   const StatePair prev_tsf_state = tsf_state_;
 
   tsf_state_.open_close = mozc_open_close_mode;
@@ -186,6 +188,7 @@ TipInputModeManager::NotifyActionSet TipInputModeManager::OnReceiveCommand(
 
 void TipInputModeManager::OnInitialize(bool system_open_close_mode,
                                        DWORD system_conversion_mode) {
+  const PublishOnExit publish_on_exit(this);
   mozc_state_.open_close = system_open_close_mode;
   tsf_state_.open_close = system_open_close_mode;
   if (use_global_mode_) {
@@ -201,6 +204,7 @@ void TipInputModeManager::OnInitialize(bool system_open_close_mode,
 TipInputModeManager::Action TipInputModeManager::OnSetFocus(
     bool system_open_close_mode, DWORD system_conversion_mode,
     absl::Span<const InputScope> input_scopes) {
+  const PublishOnExit publish_on_exit(this);
   const StatePair prev_effective = mozc_state_;
 
   indicator_visibility_tracker_.OnMoveFocusedWindow();
@@ -229,6 +233,7 @@ TipInputModeManager::Action TipInputModeManager::OnSetFocus(
 
 TipInputModeManager::Action TipInputModeManager::OnChangeOpenClose(
     bool new_open_close_mode) {
+  const PublishOnExit publish_on_exit(this);
   const bool prev_open = mozc_state_.open_close;  // effective on/off
 
   tsf_state_.open_close = new_open_close_mode;
@@ -242,6 +247,7 @@ TipInputModeManager::Action TipInputModeManager::OnChangeOpenClose(
 
 TipInputModeManager::Action TipInputModeManager::OnChangeConversionMode(
     DWORD new_conversion_mode) {
+  const PublishOnExit publish_on_exit(this);
   const StatePair prev_effective = mozc_state_;
 
   if (use_global_mode_) {
@@ -264,6 +270,7 @@ TipInputModeManager::Action TipInputModeManager::OnChangeConversionMode(
 
 TipInputModeManager::Action TipInputModeManager::OnChangeInputScope(
     absl::Span<const InputScope> input_scopes) {
+  const PublishOnExit publish_on_exit(this);
   const StatePair prev_effective = mozc_state_;
 
   std::vector<InputScope> new_input_scopes(input_scopes.begin(),
@@ -303,6 +310,15 @@ commands::CompositionMode TipInputModeManager::GetTsfConversionMode() const {
 
 bool TipInputModeManager::IsIndicatorVisible() const {
   return indicator_visibility_tracker_.IsVisible();
+}
+
+TipInputModeManager::PublishOnExit::~PublishOnExit() { self->PublishState(); }
+
+void TipInputModeManager::PublishState() const {
+  TipStatePublisher::Publish(mozc_state_.open_close,
+                             static_cast<int>(mozc_state_.conversion_mode),
+                             tsf_state_.open_close,
+                             static_cast<int>(tsf_state_.conversion_mode));
 }
 
 }  // namespace tsf
