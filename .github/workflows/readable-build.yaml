@@ -35,7 +35,17 @@ jobs:
         run: |
           python build_tools/update_deps.py
 
+      - name: Restore Qt build cache
+        id: qt-cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: |
+            src/third_party/qt
+            src/third_party/qt_host
+          key: qt-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('src/build_tools/build_qt.py', 'src/build_tools/update_deps.py') }}
+
       - name: Build Qt
+        if: steps.qt-cache.outputs.cache-hit != 'true'
         shell: cmd
         working-directory: .\src
         run: |
@@ -43,10 +53,19 @@ jobs:
 
       # This is needed only for GitHub Actions where free disk space is quite limited.
       - name: Delete Qt src to save disk space
+        if: steps.qt-cache.outputs.cache-hit != 'true'
         shell: cmd
         working-directory: .\src
         run: |
           rmdir third_party\qt_src /s /q
+
+      - name: Restore Bazel disk cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: ${{ github.workspace }}\bazel-disk-cache
+          key: bazel-${{ runner.os }}-${{ runner.arch }}-${{ github.sha }}
+          restore-keys: |
+            bazel-${{ runner.os }}-${{ runner.arch }}-
 
       - name: build artifacts
         shell: cmd
@@ -54,7 +73,7 @@ jobs:
         env:
           ANDROID_NDK_HOME: ""
         run: |
-          bazelisk build package --config release_build
+          bazelisk build package --config release_build --disk_cache=%GITHUB_WORKSPACE%\bazel-disk-cache
 
       - name: upload Mozc64_x64.msi
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
