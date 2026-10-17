@@ -1,7 +1,10 @@
 name: readable build (x64 MSI)
-# mozc-readable: upstream の build_on_x64 ジョブだけを手動実行する(段階1: 素のビルドが通るかと所要時間の確認)。
+# mozc-readable: upstream の build_on_x64 ジョブだけを実行する(readable ブランチへの push と手動)(段階1: 素のビルドが通るかと所要時間の確認)。
 
-on: workflow_dispatch
+on:
+  workflow_dispatch:
+  push:
+    branches: [readable]
 
 permissions:
   contents: read
