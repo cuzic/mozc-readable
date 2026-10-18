@@ -44,13 +44,39 @@ try {
 
 Write-Host '== E. activate and read the published state from another process'
 $here = Split-Path -Parent $MyInvocation.MyCommand.Path
-$tidFile = Join-Path $env:RUNNER_TEMP 'readable_tid.txt'
-Remove-Item $tidFile -ErrorAction SilentlyContinue
-# 0x19 = VK_KANJI (Hankaku/Zenkaku), 0xF3 = VK_OEM_AUTO; pressed twice each: ON, OFF, ON, OFF.
-$host_ = Start-Process python -ArgumentList "`"$here\ui_host.py`" `"$tidFile`" 19,19,F3,F3" -PassThru -NoNewWindow
-$r = Start-Process python -ArgumentList "`"$here\reader.py`" `"$tidFile`" 22" -Wait -PassThru -NoNewWindow
-if (-not $host_.HasExited) { $host_.WaitForExit(15000) | Out-Null }
-if ($r.ExitCode -eq 0) { Write-Host 'PASS  reader opened the shared state mapping from another process' }
-else { Write-Host "::warning::reader could not open the mapping (exit $($r.ExitCode)); TIP probably not activated in the CI session" }
+$tmp = $env:RUNNER_TEMP
+# Keys (mozc ms-ime keymap): 0x19 Kanji = IME on/off toggle, 0xF1 Katakana, 0xF0 Eisu, 0xF2 Hiragana.
+# Sequence: ON -> full katakana -> half alnum -> hiragana -> OFF.
+$keys = '19,F1,F0,F2,19'
+
+function Run-Scenario($name, $readerMode) {
+  $tidFile = Join-Path $tmp "tid_$name.txt"
+  $uiOut = Join-Path $tmp "ui_$name.out"; $rdOut = Join-Path $tmp "rd_$name.out"
+  Remove-Item $tidFile -ErrorAction SilentlyContinue
+  $ui = Start-Process python -ArgumentList "`"$here\ui_host.py`" `"$tidFile`" $keys" -PassThru -RedirectStandardOutput $uiOut -RedirectStandardError "$uiOut.err"
+  $rdArgs = "`"$here\reader.py`" `"$tidFile`" 30 $readerMode"
+  $rd = Start-Process python -ArgumentList $rdArgs -PassThru -RedirectStandardOutput $rdOut -RedirectStandardError "$rdOut.err"
+  $rd.WaitForExit(60000) | Out-Null
+  if (-not $ui.HasExited) { $ui.WaitForExit(20000) | Out-Null }
+  Write-Host "--- $name ui_host:"; Get-Content $uiOut, "$uiOut.err" -ErrorAction SilentlyContinue
+  Write-Host "--- $name reader:"; Get-Content $rdOut, "$rdOut.err" -ErrorAction SilentlyContinue
+  return @{ Ui = $uiOut; Rd = $rdOut; RdExit = $rd.ExitCode }
+}
+
+$poll = Run-Scenario 'poll' ''
+$t = Get-Content $poll.Rd -Raw
+Check 'reader opened the mapping from another process' ($poll.RdExit -eq 0)
+Check 'open: IME turned on is visible'  ($t -match 'eff_open=1 eff_mode=1')
+Check 'mode: full katakana (2) is visible' ($t -match 'eff_open=1 eff_mode=2')
+Check 'mode: half alnum (3) is visible'    ($t -match 'eff_open=1 eff_mode=3')
+Check 'open: IME turned off is visible (last state)' ($t -match 'eff_open=0 eff_mode=\d[^\n]*\r?\n[^\n]*distinct' -or $t -match '(?s)eff_open=1.*eff_open=0')
+
+Write-Host '== E2. event-driven reader and key->reader latency'
+$ev = Run-Scenario 'event' 'event'
+$e = Get-Content $ev.Rd -Raw
+Check 'reader opened the change event' ($e -match 'opened change event')
+Check 'event woke the reader at least once' ($e -match 'wakes=[1-9]')
+python "$here\summarize.py" $ev.Ui $ev.Rd
+Check 'every key produced a state change within 1000 ms' ($LASTEXITCODE -eq 0)
 
 if ($fail -gt 0) { Write-Host "$fail check(s) failed"; exit 1 }

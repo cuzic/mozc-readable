@@ -90,7 +90,7 @@ def main():
     for vk in vks:
         u32.SetForegroundWindow(hwnd)
         u32.SetFocus(edit)
-        print(f"ui_host: send vk={vk:#x}", flush=True)
+        print(f"ui_host: send vk={vk:#x} t_ns={time.time_ns()}", flush=True)
         send_vk(vk)
         pump(3)
     pump(2)
