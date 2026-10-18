@@ -258,6 +258,13 @@ HRESULT OnTestKey(TipTextService* text_service, ITfContext* context,
       vk, key_info.GetScanCode(), is_key_down, keyboard_status, behavior,
       input_state, mozc_context, private_context->GetClient(), keyboard.get(),
       &next_state, &temporal_output);
+  // mozc-readable (ADR-267 D10): a key that was sent to the server tells
+  // whether the server answered. The client returns false when the IPC call
+  // fails (including a server that is still starting), and the output then has
+  // no `consumed`. Hypothesis: this is the "cold" state; the CI decides.
+  if (result.should_be_sent_to_server) {
+    TipStatePublisher::SetServerReady(temporal_output.has_consumed());
+  }
   if (!result.succeeded) {
     *eaten = FALSE;
     return S_OK;
@@ -438,6 +445,10 @@ HRESULT OnKey(TipTextService* text_service, ITfContext* context,
         ime_state, mozc_context, private_context->GetClient(), keyboard.get(),
         &next_state, &temporal_output);
 
+    // See OnTest: whether the server answered (ADR-267 D10).
+    if (result.should_be_sent_to_server) {
+      TipStatePublisher::SetServerReady(temporal_output.has_consumed());
+    }
     if (!result.succeeded) {
       // no message generated.
       *eaten = FALSE;
