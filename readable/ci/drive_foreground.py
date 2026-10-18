@@ -77,6 +77,29 @@ def find_window(cls):
     return found[0] if found else None
 
 
+class GUITHREADINFO(ctypes.Structure):
+    _fields_ = [("cbSize", wt.DWORD), ("flags", wt.DWORD), ("hwndActive", wt.HWND), ("hwndFocus", wt.HWND),
+                ("hwndCapture", wt.HWND), ("hwndMenuOwner", wt.HWND), ("hwndMoveSize", wt.HWND),
+                ("hwndCaret", wt.HWND), ("rcCaret", wt.RECT)]
+
+
+u32.GetGUIThreadInfo.argtypes = [wt.DWORD, ctypes.POINTER(GUITHREADINFO)]
+
+
+def describe_focus():
+    """'fg=<class> focus=<class> (tid)' of the foreground window and of its keyboard-focus window, for diagnosis."""
+    fg = u32.GetForegroundWindow()
+    if not fg:
+        return "fg=None"
+    tid, _ = tid_pid(fg)
+    info = GUITHREADINFO()
+    info.cbSize = ctypes.sizeof(GUITHREADINFO)
+    focus = None
+    if u32.GetGUIThreadInfo(tid, ctypes.byref(info)) and info.hwndFocus:
+        focus = cls_of(info.hwndFocus)
+    return f"fg={cls_of(fg)!r} focus={focus!r} tid={tid}"
+
+
 def force_foreground(hwnd):
     fg = u32.GetForegroundWindow()
     cur = k32.GetCurrentThreadId()
@@ -242,7 +265,8 @@ def main():
 
     for vk, eo, em in steps:
         for attempt in range(1, 4):
-            print(f"drive: {'send' if attempt == 1 else 'again'} vk={vk:#x} t_ns={time.time_ns()} try={attempt}", flush=True)
+            print(f"drive: {'send' if attempt == 1 else 'again'} vk={vk:#x} t_ns={time.time_ns()} try={attempt} "
+                  f"[{describe_focus()}]", flush=True)
             send_vk(vk)
             deadline = time.time() + 8
             while time.time() < deadline and not matches(fg_state()[1], eo, em):
