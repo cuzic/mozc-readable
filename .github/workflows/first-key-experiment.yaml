@@ -1,0 +1,164 @@
+name: first-key experiment (official Mozc vs mozc-readable)
+# Experiment, not a gate. Question: is the first IME-on key of a fresh process lost, and does it depend on how
+# long the thread lived before the key? Same probe against an unmodified Mozc (built from the fork's master,
+# which is the base of `readable`) and against mozc-readable.
+# It runs only when this file or the probe changes (push to readable, paths filter).
+
+on:
+  push:
+    branches: [readable]
+    paths:
+      - '.github/workflows/first-key-experiment.yaml'
+      - 'readable/ci/first_key_probe.py'
+      - 'readable/ci/first_key_experiment.ps1'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: first-key-experiment-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # The unmodified upstream commit `readable` is based on (the fork's master).
+  UPSTREAM_SHA: 0136c35782536cb43d710575c311cd4185982738
+
+jobs:
+  build_official:
+    runs-on: windows-2025
+    timeout-minutes: 120
+    steps:
+      - name: Checkout the unmodified upstream commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          ref: ${{ env.UPSTREAM_SHA }}
+          submodules: false
+          persist-credentials: false
+
+      - name: Reuse the official MSI built from the same commit
+        id: msi-cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: msi-cache
+          key: msi-official-${{ runner.os }}-${{ runner.arch }}-${{ env.UPSTREAM_SHA }}
+
+      - name: Try to restore update_deps cache
+        if: steps.msi-cache.outputs.cache-hit != 'true'
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: src/third_party_cache
+          key: update_deps-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('src/build_tools/update_deps.py') }}
+
+      - name: Install Dependencies
+        if: steps.msi-cache.outputs.cache-hit != 'true'
+        shell: cmd
+        working-directory: .\src
+        run: |
+          python build_tools/update_deps.py
+
+      - name: Restore Qt build cache
+        id: qt-cache
+        if: steps.msi-cache.outputs.cache-hit != 'true'
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: |
+            src/third_party/qt
+            src/third_party/qt_host
+          key: qt-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('src/build_tools/build_qt.py', 'src/build_tools/update_deps.py') }}
+
+      - name: Build Qt
+        if: steps.msi-cache.outputs.cache-hit != 'true' && steps.qt-cache.outputs.cache-hit != 'true'
+        shell: cmd
+        working-directory: .\src
+        run: |
+          python build_tools/build_qt.py --release --confirm_license
+
+      - name: Delete Qt src to save disk space
+        if: steps.msi-cache.outputs.cache-hit != 'true' && steps.qt-cache.outputs.cache-hit != 'true'
+        shell: cmd
+        working-directory: .\src
+        run: |
+          rmdir third_party\qt_src /s /q
+
+      - name: Restore Bazel disk cache
+        if: steps.msi-cache.outputs.cache-hit != 'true'
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: ${{ github.workspace }}\bazel-disk-cache
+          key: bazel-official-${{ runner.os }}-${{ runner.arch }}-${{ github.sha }}
+          restore-keys: |
+            bazel-${{ runner.os }}-${{ runner.arch }}-
+
+      - name: build artifacts (unmodified Mozc)
+        if: steps.msi-cache.outputs.cache-hit != 'true'
+        shell: cmd
+        working-directory: .\src
+        env:
+          ANDROID_NDK_HOME: ""
+        run: |
+          bazelisk build package --config release_build --disk_cache=%GITHUB_WORKSPACE%\bazel-disk-cache
+
+      - name: Keep the MSI for reuse
+        if: steps.msi-cache.outputs.cache-hit != 'true'
+        shell: cmd
+        run: |
+          if not exist msi-cache mkdir msi-cache
+          copy src\bazel-bin\win32\installer\Mozc64.msi msi-cache\Mozc64.msi
+
+      - name: upload the official MSI
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: Mozc64_official.msi
+          path: msi-cache/Mozc64.msi
+          if-no-files-found: error
+
+  get_readable:
+    # The readable MSI is whatever the latest successful readable-build run produced (same src/ as this commit's
+    # tree unless src/ changed since; the run id is printed).
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - name: Download the latest successful readable-build MSI
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          run_id=$(gh run list -R "$GITHUB_REPOSITORY" --workflow readable-build.yaml --branch readable --status success --limit 1 --json databaseId --jq '.[0].databaseId')
+          echo "readable-build run: $run_id"
+          gh run download "$run_id" -R "$GITHUB_REPOSITORY" -n Mozc64_x64.msi -D readable-msi
+          ls -l readable-msi
+
+      - name: upload the readable MSI
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: Mozc64_readable.msi
+          path: readable-msi/Mozc64.msi
+          if-no-files-found: error
+
+  probe:
+    needs: [build_official, get_readable]
+    runs-on: windows-2025
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        product: [official, readable]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          submodules: false
+          persist-credentials: false
+
+      - name: Download the MSI
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
+        with:
+          name: Mozc64_${{ matrix.product }}.msi
+          path: msi
+
+      - name: First-key experiment (${{ matrix.product }})
+        shell: pwsh
+        run: ./readable/ci/first_key_experiment.ps1 -Msi "${{ github.workspace }}\msi\Mozc64.msi" -Product ${{ matrix.product }}
