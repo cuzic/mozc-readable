@@ -1,6 +1,7 @@
 # mozc-readable CI: install the MSI, verify it, publish/read the shared state (uninstall.ps1 follows).
 # Stages A-D are hard checks (exit 1). Stage E (activate the TIP and read published state)
 # is reported with ::warning:: while the activation procedure is still being established.
+# (CI timing note: measured on run 39099740462, the four sections ran in 59-136 s in parallel versus about 307 s in series.)
 # -Section splits the scenarios so CI can run them in parallel on separate runners (A-D always run):
 #   state = E + E2, apps = G (Chrome, Notepad), appcontainer = the AppContainer check,
 #   deactivation = H (switches the keyboard layout, which is global to the session, so it needs a runner
