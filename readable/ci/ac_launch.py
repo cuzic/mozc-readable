@@ -1,6 +1,6 @@
 """CI helper: start ui_host.py inside an AppContainer (the sandbox UWP apps run in).
 
-usage: ac_launch.py <work dir> <idle seconds>
+usage: ac_launch.py <work dir> <idle seconds> [monitor seconds, default 100]
 Creates (or reuses) the AppContainer profile "ReadableCiAC", grants it read access to the Python
 install and this directory, and starts `python -I -B ui_host.py <tid file> "" <idle>` with the
 AppContainer token. stdout/stderr of the child go to <work dir>\\ac_ui_host.out. Returns right away.
@@ -50,6 +50,8 @@ class PROCESS_INFORMATION(ctypes.Structure):
 def main():
     workdir = os.path.abspath(sys.argv[1])
     idle = sys.argv[2] if len(sys.argv) > 2 else "60"
+    # How long this process (the AppContainer child's parent) stays alive: the child is killed when the parent exits.
+    monitor = float(sys.argv[3]) if len(sys.argv) > 3 else 100.0
     os.makedirs(workdir, exist_ok=True)
 
     psid = ctypes.c_void_p()
@@ -105,7 +107,7 @@ def main():
     import time
     k32.GetExitCodeProcess.argtypes = [wt.HANDLE, ctypes.POINTER(wt.DWORD)]
     t0 = time.time()
-    while time.time() - t0 < 100:
+    while time.time() - t0 < monitor:
         code = wt.DWORD()
         k32.GetExitCodeProcess(pi.hProcess, ctypes.byref(code))
         if code.value != 259:  # STILL_ACTIVE
@@ -113,7 +115,7 @@ def main():
                   flush=True)
             return
         time.sleep(0.5)
-    print("ac_launch: AppContainer process still alive after 100 s", flush=True)
+    print(f"ac_launch: AppContainer process still alive after {monitor:.0f} s", flush=True)
 
 
 main()
