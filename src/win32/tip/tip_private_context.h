@@ -32,6 +32,7 @@
 
 #include <windows.h>
 
+#include <cstdint>
 #include <memory>
 
 #include "client/client_interface.h"
@@ -68,6 +69,16 @@ class TipPrivateContext {
   VirtualKey* mutable_last_down_key();
   const InputBehavior& input_behavior() const;
   InputBehavior* mutable_input_behavior();
+
+  // mozc-readable (ADR-267 D5): the key_seq of the key-down whose server
+  // response is `last_output()`. Outputs that no key produced keep the
+  // previous value.
+  uint32_t last_output_key_seq() const;
+  void set_last_output_key_seq(uint32_t key_seq);
+  // True while `last_output()` is a TEST_SEND_KEY response (OnTest), which is
+  // not the result of the server processing the key.
+  bool last_output_is_test() const;
+  void set_last_output_is_test(bool is_test);
 
  private:
   class InternalState;

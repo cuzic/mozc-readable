@@ -33,9 +33,11 @@
 #include <wil/com.h>
 
 #include <cstdint>
+#include <optional>
 
 #include "protocol/commands.pb.h"
 #include "win32/tip/tip_input_mode_manager.h"
+#include "win32/tip/tip_state_publisher.h"
 #include "win32/tip/tip_status.h"
 #include "win32/tip/tip_text_service.h"
 #include "win32/tip/tip_thread_context.h"
@@ -91,8 +93,10 @@ void UpdateLanguageBarOnFocusChange(TipTextService* text_service,
 }
 
 bool UpdateInternal(TipTextService* text_service, ITfContext* context,
-                    TfEditCookie read_cookie) {
-  return TipUiHandlerConventional::Update(text_service, context, read_cookie);
+                    TfEditCookie read_cookie,
+                    std::optional<TipCompositionState>* composition) {
+  return TipUiHandlerConventional::Update(text_service, context, read_cookie,
+                                          composition);
 }
 
 }  // namespace
@@ -124,7 +128,15 @@ bool TipUiHandler::Update(TipTextService* text_service, ITfContext* context,
   const bool open = input_mode_manager->GetEffectiveOpenClose();
   const CompositionMode mozc_mode =
       input_mode_manager->GetEffectiveConversionMode();
-  const bool result = UpdateInternal(text_service, context, read_cookie);
+  std::optional<TipCompositionState> composition;
+  const bool result =
+      UpdateInternal(text_service, context, read_cookie, &composition);
+  // mozc-readable (ADR-267 D7): the composition fields are published here, at
+  // the end of the edit session, from the same last_output() the candidate
+  // window is drawn from.
+  if (composition.has_value()) {
+    TipStatePublisher::SetComposition(*composition);
+  }
   if (open) {
     text_service->UpdateLangbar(true, mozc_mode);
   } else {
