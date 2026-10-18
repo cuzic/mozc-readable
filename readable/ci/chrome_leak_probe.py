@@ -208,7 +208,39 @@ class Ctx:
 
 
 def result(name, ok, detail=""):
+    detail = str(detail).encode("ascii", "backslashreplace").decode()  # the redirected stdout is cp1252
     print(f"probe: SOFT {name} ok={bool(ok)} {detail}", flush=True)
+
+
+class THREADENTRY32(ctypes.Structure):
+    _fields_ = [("dwSize", wt.DWORD), ("cntUsage", wt.DWORD), ("th32ThreadID", wt.DWORD),
+                ("th32OwnerProcessID", wt.DWORD), ("tpBasePri", wt.LONG), ("tpDeltaPri", wt.LONG), ("dwFlags", wt.DWORD)]
+
+
+k32.CreateToolhelp32Snapshot.restype = wt.HANDLE
+k32.CreateToolhelp32Snapshot.argtypes = [wt.DWORD, wt.DWORD]
+k32.Thread32First.argtypes = [wt.HANDLE, ctypes.POINTER(THREADENTRY32)]
+k32.Thread32Next.argtypes = [wt.HANDLE, ctypes.POINTER(THREADENTRY32)]
+
+
+def scan_blocks():
+    """{tid: (pid, key_seq, eaten, plen, phase, eo)} for every thread in the session that has a block (any process)."""
+    out = {}
+    snap = k32.CreateToolhelp32Snapshot(4, 0)  # TH32CS_SNAPTHREAD
+    te = THREADENTRY32()
+    te.dwSize = ctypes.sizeof(THREADENTRY32)
+    ok = k32.Thread32First(snap, ctypes.byref(te))
+    while ok:
+        h = k32.OpenFileMappingW(4, False, f"Local\\mozc-readable-ime-{te.th32ThreadID}")
+        if h:
+            v = _views.get(te.th32ThreadID) or k32.MapViewOfFile(h, 4, 0, 0, 0)
+            _views[te.th32ThreadID] = v
+            a = struct.unpack(FMT, ctypes.string_at(v, 88)) if v else None
+            if a and a[1] >= 3:
+                out[te.th32ThreadID] = (te.th32OwnerProcessID, a[15], a[19], a[13], a[11], a[3])
+        ok = k32.Thread32Next(snap, ctypes.byref(te))
+    k32.CloseHandle(snap)
+    return out
 
 
 def main():
@@ -253,6 +285,25 @@ def main():
     time.sleep(10.0)
     c.turn_on("after 10 s idle")
     idle = c.scenario("C5 after idle 10 s with the IME on, 'ka'", [K, A_], gap=0.002)
+
+    # Where do the counters move? Every thread with a block, before and after 'ka' typed with the IME on.
+    c.turn_on("scan")
+    c.clear()
+    before = scan_blocks()
+    print(f"probe: info scan: {len(before)} blocks; fg tid={tid}; owners="
+          f"{sorted({(t, v[0]) for t, v in before.items()})}", flush=True)
+    for vk in (K, A_):
+        send_vk(vk, gap=0.03)
+    time.sleep(1.5)
+    after = scan_blocks()
+    moved = []
+    for t, v in after.items():
+        b = before.get(t)
+        if b is None or (v[1], v[2], v[3], v[4]) != (b[1], b[2], b[3], b[4]):
+            moved.append((t, v[0], "new" if b is None else f"key_seq {b[1]}->{v[1]} eaten {b[2]}->{v[2]} plen {b[3]}->{v[3]} phase {b[4]}->{v[4]}"))
+    print(f"probe: info scan moved after 'ka' (tid, pid, change): {moved}", flush=True)
+    result("the counters move on some thread when 'ka' is typed in Chrome", any("key_seq" in m[2] and m[2].split()[1].split("->")[0] != m[2].split()[1].split("->")[1] for m in moved),
+           f"moved={moved}")
 
     result("H1 key_seq counts every key (Chrome, IME closed)", closed["dkey"] == closed["sent"],
            f"sent={closed['sent']} dkey={closed['dkey']}")
