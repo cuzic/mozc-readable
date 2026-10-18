@@ -137,7 +137,7 @@ function Run-App($label, $exe, $exeArgs, $class, $procName) {
   Get-Process -Name $procName -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
 }
 $page = Join-Path $tmp 'input.html'
-Set-Content $page '<!doctype html><title>t</title><input id=a autofocus style="width:90%;font-size:30px">' -Encoding UTF8
+Set-Content $page '<!doctype html><title>t</title><style>html,body{margin:0;height:100%}</style><input id=a autofocus style="position:fixed;left:0;top:0;width:100%;height:100%;box-sizing:border-box;font-size:40px">' -Encoding UTF8
 $chrome = @("${env:ProgramFiles}\Google\Chrome\Application\chrome.exe", "${env:ProgramFiles(x86)}\Google\Chrome\Application\chrome.exe") | Where-Object { Test-Path $_ } | Select-Object -First 1
 if ($chrome) {
   $udd = Join-Path $tmp 'chrome-profile'

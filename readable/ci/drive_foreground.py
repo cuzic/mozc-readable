@@ -273,16 +273,11 @@ def main():
     if st is None:
         sys.exit(3)
 
-    # The keys must reach an input, not the frame: in Chrome the keyboard focus sits on the top-level frame
-    # (Chrome_WidgetWin_1) until the page's input gets it, and the first IME-on key was lost then (run 39105209924:
-    # focus='Chrome_WidgetWin_1' at the first send, the resend 8 s later worked). Click until the focus is on a child
-    # window (Chrome_RenderWidgetHostHWND, Edit, ...), at most 10 s.
-    top_class = cls_of(hwnd) if hwnd else None
-    focus_deadline = time.time() + 10
-    while time.time() < focus_deadline:
-        fc = focus_class()
-        if fc and fc != top_class:
-            break
+    # Click into the page so that its input has the focus. The test page is one full-page input (verify.ps1), so a
+    # click anywhere in the client area lands on it; the earlier page had a small input at the top, and a click on the
+    # blank body takes the focus away from it. (The class of the focus window is NOT a usable signal in Chrome: it
+    # stays 'Chrome_WidgetWin_1' also when the keys work. Runs 39105209924 / 39105396367.)
+    for _ in range(2):
         r = wt.RECT()
         u32.GetWindowRect(hwnd, ctypes.byref(r))
         u32.SetCursorPos((r.left + r.right) // 2, (r.top + r.bottom) // 2 + 40)
