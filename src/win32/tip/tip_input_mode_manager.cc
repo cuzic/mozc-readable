@@ -56,11 +56,18 @@ void Dedup(std::vector<T>* container) {
 
 }  // namespace
 
-TipInputModeManagerImpl::StatePair TipInputModeManagerImpl::GetOverriddenState(
-    const StatePair& base_state, absl::Span<const InputScope> input_scopes) {
-  if (input_scopes.empty()) {
-    return base_state;
-  }
+namespace {
+
+// scope_forced_mode is published as CompositionMode + 1 (ADR-267 D8).
+static_assert(commands::DIRECT == 0 && commands::HIRAGANA == 1 &&
+                  commands::FULL_KATAKANA == 2 && commands::HALF_ASCII == 3 &&
+                  commands::FULL_ASCII == 4 && commands::HALF_KATAKANA == 5,
+              "published CompositionMode values changed");
+
+// Maps each input scope to the composition mode it asks for and returns the
+// deduplicated list (empty when no scope asks for a mode).
+std::vector<commands::CompositionMode> CollectScopeModes(
+    absl::Span<const InputScope> input_scopes) {
   std::vector<commands::CompositionMode> states;
   for (const auto& input_scope : input_scopes) {
     switch (input_scope) {
@@ -99,10 +106,22 @@ TipInputModeManagerImpl::StatePair TipInputModeManagerImpl::GetOverriddenState(
         break;
     }
   }
+  Dedup(&states);
+  return states;
+}
+
+}  // namespace
+
+TipInputModeManagerImpl::StatePair TipInputModeManagerImpl::GetOverriddenState(
+    const StatePair& base_state, absl::Span<const InputScope> input_scopes) {
+  if (input_scopes.empty()) {
+    return base_state;
+  }
+  const std::vector<commands::CompositionMode> states =
+      CollectScopeModes(input_scopes);
   if (states.empty()) {
     return base_state;
   }
-  Dedup(&states);
   if (states.size() > 1) {
     // Multiple modes found.
     // TODO(yukawa): consider this case.
@@ -112,6 +131,18 @@ TipInputModeManagerImpl::StatePair TipInputModeManagerImpl::GetOverriddenState(
     return StatePair(false, base_state.conversion_mode);
   }
   return StatePair(true, states[0]);
+}
+
+uint32_t TipInputModeManagerImpl::GetScopeForcedMode(
+    absl::Span<const InputScope> input_scopes) {
+  // The same condition as the branch of GetOverriddenState that overrides:
+  // exactly one mode is asked for.
+  const std::vector<commands::CompositionMode> states =
+      CollectScopeModes(input_scopes);
+  if (states.size() != 1) {
+    return 0;
+  }
+  return static_cast<uint32_t>(states[0]) + 1;
 }
 
 // For Mode Indicator.
@@ -318,7 +349,8 @@ void TipInputModeManager::PublishState() const {
   TipStatePublisher::Publish(mozc_state_.open_close,
                              static_cast<int>(mozc_state_.conversion_mode),
                              tsf_state_.open_close,
-                             static_cast<int>(tsf_state_.conversion_mode));
+                             static_cast<int>(tsf_state_.conversion_mode),
+                             GetScopeForcedMode(input_scope_));
 }
 
 }  // namespace tsf

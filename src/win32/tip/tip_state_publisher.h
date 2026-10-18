@@ -43,6 +43,7 @@
 #ifndef MOZC_WIN32_TIP_TIP_STATE_PUBLISHER_H_
 #define MOZC_WIN32_TIP_TIP_STATE_PUBLISHER_H_
 
+#include <cstddef>
 #include <cstdint>
 
 namespace mozc {
@@ -50,13 +51,19 @@ namespace win32 {
 namespace tsf {
 
 inline constexpr uint32_t kTipSharedStateMagic = 0x5A52444D;  // 'MDRZ'
-inline constexpr uint32_t kTipSharedStateVersion = 2;
+inline constexpr uint32_t kTipSharedStateVersion = 3;
+// Size of the version 2 layout. A block of this size left by an older DLL is
+// still written (version 2, first 48 bytes only).
+inline constexpr size_t kTipSharedStateV2Size = 48;
 
 // Layout is part of the external interface. Append only, bump the version on
 // incompatible changes. All fields are little-endian 32/64-bit integers.
 // Version 2: the former `reserved` field is `active`. Readers must ignore blocks
 // whose version is lower than 2 (they cannot tell a deactivated TIP from a live one),
 // and must treat seq == 0 as "not published yet" (`magic` is written last).
+// Version 3 (ADR-267): 32 bytes appended (offsets 48..79). Offsets 0..47 are
+// unchanged. Readers must ignore every version 3 field while active == 0.
+// See readable/docs/shared-memory.md for the meaning of each field.
 struct TipSharedState {
   uint32_t magic;           // kTipSharedStateMagic
   uint32_t version;         // kTipSharedStateVersion
@@ -69,8 +76,35 @@ struct TipSharedState {
   uint32_t process_id;
   uint32_t active;          // 1 while this TIP is activated on the thread (Activate..Deactivate)
   uint64_t update_tick_ms;  // GetTickCount64() of the last publish
+  // ---- version 3 ----
+  uint32_t phase;                 // 0 none, 1 composing, 2 converting
+  uint32_t candidate_category;    // 0 none, 1 SUGGESTION, 2 PREDICTION, 3 CONVERSION
+  uint32_t preedit_utf16_len;     // length of the preedit in UTF-16 code units
+  uint32_t preedit_cursor;        // UTF-32 code points (Mozc's unit)
+  uint32_t key_seq;               // key-downs seen by OnTestKeyDown/OnPreservedKey
+  uint32_t scope_forced_mode;     // 0 none, else commands::CompositionMode + 1
+  uint32_t server_ready;          // 1 once a server response was received
+  uint32_t composition_key_seq;   // key_seq of the key that produced the composition fields
 };
-static_assert(sizeof(TipSharedState) == 48, "TipSharedState layout changed");
+static_assert(sizeof(TipSharedState) == 80, "TipSharedState layout changed");
+static_assert(offsetof(TipSharedState, update_tick_ms) == 40,
+              "TipSharedState layout changed");
+static_assert(offsetof(TipSharedState, phase) == kTipSharedStateV2Size,
+              "TipSharedState layout changed");
+static_assert(offsetof(TipSharedState, key_seq) == 64,
+              "TipSharedState layout changed");
+static_assert(offsetof(TipSharedState, composition_key_seq) == 76,
+              "TipSharedState layout changed");
+
+// The composition fields, produced from `TipPrivateContext::last_output()` in
+// TipUiHandler::Update (ADR-267 D7).
+struct TipCompositionState {
+  uint32_t phase = 0;
+  uint32_t candidate_category = 0;
+  uint32_t preedit_utf16_len = 0;
+  uint32_t preedit_cursor = 0;
+  uint32_t composition_key_seq = 0;
+};
 
 class TipStatePublisher {
  public:
@@ -78,12 +112,30 @@ class TipStatePublisher {
 
   // Publishes the state for the calling thread. Never blocks and never fails
   // visibly: if the objects cannot be created, this is a no-op.
+  // `scope_forced_mode` is 0 (no input scope override) or the
+  // commands::CompositionMode the input scope forces, plus 1.
   static void Publish(bool effective_open, int effective_mode, bool tsf_open,
-                      int tsf_mode);
+                      int tsf_mode, uint32_t scope_forced_mode);
 
   // Marks the TIP as activated / deactivated on the calling thread
   // (TipTextService::ActivateEx / Deactivate).
+  // Deactivating also zeroes the composition fields and scope_forced_mode
+  // (key_seq is kept).
   static void SetActive(bool active);
+
+  // Publishes the composition fields. Writes whenever any field changed, but
+  // pulses the change event only when `phase` or `candidate_category` changed.
+  static void SetComposition(const TipCompositionState& composition);
+
+  // Counts one key-down seen by the TIP (key_seq += 1). Written on every call,
+  // never pulses.
+  static void CountKeyDown();
+
+  // The current key_seq of the calling thread.
+  static uint32_t CurrentKeySeq();
+
+  // Records whether the last call to the Mozc server got a response.
+  static void SetServerReady(bool ready);
 };
 
 }  // namespace tsf
