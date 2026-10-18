@@ -82,10 +82,14 @@ function Run-Scenario($name, $readerMode, $keys) {
   return @{ Ui = $uiOut; Rd = $rdOut; RdExit = $rd.ExitCode }
 }
 
-if (Want 'state') {
 # Warm-up: the first activation starts mozc_server (a previous run saw ~3 s for the first key and a
 # lost key in the cold polling run). Not asserted; only there so the measured runs are steady state.
-$null = Run-Scenario 'warmup' '' 'F2=1:1,19=0:*'
+# Every section that drives the IME needs it on its own runner: without it the AppContainer check's first
+# key (IME on) was lost on all 3 tries (runs 39099740462 and 39100514498, 'all steps reached' was NO).
+# 'deactivation' has its own scenario and does not need it.
+if ($Section -ne 'deactivation') { $null = Run-Scenario 'warmup' '' 'F2=1:1,19=0:*' }
+
+if (Want 'state') {
 $poll = Run-Scenario 'poll' '' $keys
 $t = Get-Content $poll.Rd -Raw
 Check 'reader opened the mapping from another process' ($poll.RdExit -eq 0)
