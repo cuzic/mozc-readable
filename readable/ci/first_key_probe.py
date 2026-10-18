@@ -8,7 +8,7 @@ default keymap), then 'A' and Enter.  If the key took effect the IME is on, 'a' 
 holds "あ"; if it was lost the EDIT holds "a".  The oracle is the text, so it does not depend on any API of
 the IME under test (the official Mozc has no shared-memory block).
 
-Prints one line:  RESULT delay=<s> text=<repr> ok=<True|False> t_window_ms=<ms>
+Prints one line (ASCII only):  RESULT delay=<s> text=<ascii(text)> ok=<True|False> t_window_ms=<ms>
 """
 import ctypes
 import ctypes.wintypes as wt
@@ -101,7 +101,9 @@ def main():
     buf = ctypes.create_unicode_buffer(64)
     u32.GetWindowTextW(edit, buf, 64)
     text = buf.value
-    print(f"RESULT delay={delay} text={text!r} ok={text == chr(0x3042)} t_window_ms={t_window_ms}", flush=True)
+    # ASCII only: stdout is redirected and its code page (cp1252 on the runner) cannot encode U+3042;
+    # run 39104280272 crashed in this print although the text did hold U+3042.
+    print(f"RESULT delay={delay} text={ascii(text)} ok={text == chr(0x3042)} t_window_ms={t_window_ms}", flush=True)
 
 
 main()
