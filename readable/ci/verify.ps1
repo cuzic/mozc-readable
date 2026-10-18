@@ -49,7 +49,7 @@ $tmp = $env:RUNNER_TEMP
 # Sequence: ON -> full katakana -> half alnum -> hiragana -> OFF.
 $keys = '19,F1,F0,F2,19'
 
-function Run-Scenario($name, $readerMode) {
+function Run-Scenario($name, $readerMode, $keys) {
   $tidFile = Join-Path $tmp "tid_$name.txt"
   $uiOut = Join-Path $tmp "ui_$name.out"; $rdOut = Join-Path $tmp "rd_$name.out"
   Remove-Item $tidFile -ErrorAction SilentlyContinue
@@ -58,12 +58,15 @@ function Run-Scenario($name, $readerMode) {
   $rd = Start-Process python -ArgumentList $rdArgs -PassThru -RedirectStandardOutput $rdOut -RedirectStandardError "$rdOut.err"
   $rd.WaitForExit(60000) | Out-Null
   if (-not $ui.HasExited) { $ui.WaitForExit(20000) | Out-Null }
-  Write-Host "--- $name ui_host:"; Get-Content $uiOut, "$uiOut.err" -ErrorAction SilentlyContinue
-  Write-Host "--- $name reader:"; Get-Content $rdOut, "$rdOut.err" -ErrorAction SilentlyContinue
+  Write-Host "--- $name ui_host:"; Get-Content $uiOut, "$uiOut.err" -ErrorAction SilentlyContinue | Out-Host
+  Write-Host "--- $name reader:"; Get-Content $rdOut, "$rdOut.err" -ErrorAction SilentlyContinue | Out-Host
   return @{ Ui = $uiOut; Rd = $rdOut; RdExit = $rd.ExitCode }
 }
 
-$poll = Run-Scenario 'poll' ''
+# Warm-up: the first activation starts mozc_server (a previous run saw ~3 s for the first key and a
+# lost key in the cold polling run). Not asserted; only there so the measured runs are steady state.
+$null = Run-Scenario 'warmup' '' '19,19'
+$poll = Run-Scenario 'poll' '' $keys
 $t = Get-Content $poll.Rd -Raw
 Check 'reader opened the mapping from another process' ($poll.RdExit -eq 0)
 Check 'open: IME turned on is visible'  ($t -match 'eff_open=1 eff_mode=1')
@@ -72,7 +75,7 @@ Check 'mode: half alnum (3) is visible'    ($t -match 'eff_open=1 eff_mode=3')
 Check 'open: IME turned off is visible (last state)' ($t -match 'eff_open=0 eff_mode=\d[^\n]*\r?\n[^\n]*distinct' -or $t -match '(?s)eff_open=1.*eff_open=0')
 
 Write-Host '== E2. event-driven reader and key->reader latency'
-$ev = Run-Scenario 'event' 'event'
+$ev = Run-Scenario 'event' 'event' $keys
 $e = Get-Content $ev.Rd -Raw
 Check 'reader opened the change event' ($e -match 'opened change event')
 Check 'event woke the reader at least once' ($e -match 'wakes=[1-9]')

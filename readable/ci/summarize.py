@@ -11,6 +11,13 @@ sends = [(m.group(1), int(m.group(2))) for l in open(sys.argv[1], errors="replac
 changes = [(int(m.group(1)), int(m.group(2)), int(m.group(3))) for l in open(sys.argv[2], errors="replace")
            if (m := re.search(r"eff_open=(\d) eff_mode=(\d).*t_ns=(\d+)", l))]
 changes = [(t, o, md) for o, md, t in changes]
+# keep only changes of the effective (open, mode) pair; tsf-only changes are not what a key press means
+dedup, prev = [], None
+for t, o, md in changes:
+    if (o, md) != prev:
+        dedup.append((t, o, md))
+        prev = (o, md)
+changes = dedup
 bad = 0
 lat = []
 for vk, t0 in sends:
