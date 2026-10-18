@@ -229,7 +229,7 @@ $tidFile = Join-Path $tmp 'tid_composition.txt'
 $cpOut = Join-Path $tmp 'composition.out'
 # Not `-Wait`: mozc_server is started by the TIP inside the probe, so it is a child of the probe holding the redirected
 # output handles, and -Wait would wait for it too (the first run of this section hung for 15 minutes on that).
-$cp = Start-Process python -ArgumentList "`\"$here\composition_probe.py`\" `\"$tidFile`\"" -PassThru -NoNewWindow -RedirectStandardOutput $cpOut -RedirectStandardError "$cpOut.err"
+$cp = Start-Process python -ArgumentList "`"$here\composition_probe.py`" `"$tidFile`"" -PassThru -NoNewWindow -RedirectStandardOutput $cpOut -RedirectStandardError "$cpOut.err"
 if (-not $cp.WaitForExit(240000)) { Write-Host '::warning::composition_probe.py did not finish in 240 s; killing it'; Stop-Process -Id $cp.Id -Force -ErrorAction SilentlyContinue }
 Remove-Item Env:\MOZC_CI_DEACTIVATE
 Get-Content $cpOut, "$cpOut.err" -ErrorAction SilentlyContinue | Out-Host
