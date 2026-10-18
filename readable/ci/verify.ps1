@@ -7,7 +7,10 @@
 #   config = I (writes config1.db into the user profile and restarts mozc_server: it changes the profile and the
 #   running server, so it has a runner of its own),
 #   deactivation = H (switches the keyboard layout, which is global to the session, so it needs a runner
-#   of its own). 'all' runs everything in this order, as before.
+#   of its own),
+#   composition = J (the version 3 fields, ADR-267: composition_probe.py; it starts cold on purpose (no warm-up) to
+#   observe server_ready, and ends with a layout switch, so it too has a runner of its own).
+#   'all' runs everything in this order, as before.
 # Where a new scenario goes: one that only needs the TIP loaded goes in the section that matches what it
 # looks at (state: shared-memory values and latency; apps: ordinary foreground apps; appcontainer: inside an
 # AppContainer). One that changes the state of the whole session (switching the input method or layout,
@@ -15,7 +18,7 @@
 # like deactivation, so it runs on a separate runner. When you add a section, change the ValidateSet below
 # and `matrix.section` in .github/workflows/readable-build.yaml together.
 param([Parameter(Mandatory)][string]$Msi,
-      [ValidateSet('all', 'state', 'apps', 'appcontainer', 'config', 'deactivation')][string]$Section = 'all')
+      [ValidateSet('all', 'state', 'apps', 'appcontainer', 'config', 'deactivation', 'composition')][string]$Section = 'all')
 $ErrorActionPreference = 'Stop'
 $Clsid   = '{AFC94560-63DA-488E-9227-B04F3EF34B5B}'
 $Profile = '{7D7B9A38-A0A4-4390-9706-509E98A8C791}'
@@ -94,13 +97,15 @@ function Run-Scenario($name, $readerMode, $keys) {
 # Every section that drives the IME needs it on its own runner: without it the AppContainer check's first
 # key (IME on) was lost on all 3 tries (runs 39099740462 and 39100514498, 'all steps reached' was NO).
 # 'deactivation' has its own scenario and does not need it.
-if ($Section -ne 'deactivation') { $null = Run-Scenario 'warmup' '' 'F2=1:1,19=0:*' }
+# 'composition' starts cold on purpose (server_ready, ADR-267 D10).
+if ($Section -notin 'deactivation', 'composition') { $null = Run-Scenario 'warmup' '' 'F2=1:1,19=0:*' }
 
 if (Want 'state') {
 $poll = Run-Scenario 'poll' '' $keys
 $t = Get-Content $poll.Rd -Raw
 Check 'reader opened the mapping from another process' ($poll.RdExit -eq 0)
-Check 'block is version 2 and active=1 while the TIP is live' ($t -match 'active=1 version=2')
+Check 'block is version 3 and active=1 while the TIP is live (read from another process)' ($t -match 'active=1 version=3')
+Check 'the version 3 fields are in the reader output' ($t -match 'phase=\d cat=\d plen=\d pcur=\d key_seq=\d+ sfm=\d srv=\d cks=\d+')
 Check 'open: IME turned on is visible'  ($t -match 'eff_open=1 eff_mode=1')
 Check 'mode: full katakana (2) is visible' ($t -match 'eff_open=1 eff_mode=2')
 Check 'mode: half alnum (3) is visible'    ($t -match 'eff_open=1 eff_mode=3')
@@ -215,6 +220,22 @@ Remove-Item Env:\MOZC_CI_DEACTIVATE
 $deT = Get-Content $de.Ui -Raw
 Soft 'active=1 before the layout switch' ($deT -match 'before deactivate: active=1')
 Soft 'active becomes 0 after the thread switches to a layout without the TIP' ($deT -match 'deactivate: active=0')
+}
+
+if (Want 'composition') {
+Write-Host '== J. version 3 fields (ADR-267 stage 1): composition_probe.py, in-process reads; the layout switch is last'
+$env:MOZC_CI_DEACTIVATE = '1'
+$tidFile = Join-Path $tmp 'tid_composition.txt'
+$cpOut = Join-Path $tmp 'composition.out'
+$cp = Start-Process python -ArgumentList "`"$here\composition_probe.py`" `"$tidFile`"" -PassThru -NoNewWindow -Wait -RedirectStandardOutput $cpOut -RedirectStandardError "$cpOut.err"
+Remove-Item Env:\MOZC_CI_DEACTIVATE
+Get-Content $cpOut, "$cpOut.err" -ErrorAction SilentlyContinue | Out-Host
+Check 'composition_probe.py ran to the end' ($cp.ExitCode -eq 0) "(exit $($cp.ExitCode))"
+foreach ($line in (Get-Content $cpOut -ErrorAction SilentlyContinue)) {
+  if ($line -match '^probe: (HARD|SOFT) (.+) ok=(True|False)') {
+    if ($Matches[1] -eq 'HARD') { Check $Matches[2] ($Matches[3] -eq 'True') } else { Soft $Matches[2] ($Matches[3] -eq 'True') }
+  }
+}
 }
 
 if ($fail -gt 0) { Write-Host "$fail check(s) failed"; exit 1 }
