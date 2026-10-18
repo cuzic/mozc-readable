@@ -20,7 +20,8 @@ for t, o, md in changes:
 changes = dedup
 bad = 0
 lat = []
-for vk, t0 in sends:
+first_ms = None
+for idx, (vk, t0) in enumerate(sends):
     after = [c for c in changes if c[0] >= t0]
     if not after:
         print(f"vk={vk}: no state change observed")
@@ -28,10 +29,14 @@ for vk, t0 in sends:
         continue
     t1, o, md = after[0]
     ms = (t1 - t0) / 1e6
-    lat.append(ms)
-    print(f"vk={vk}: key sent -> reader saw open={o} mode={md} after {ms:.1f} ms")
+    if idx == 0:
+        first_ms = ms  # cold: a new Mozc session is created in the fresh process
+    else:
+        lat.append(ms)
+    print(f"vk={vk}: key sent -> reader saw open={o} mode={md} after {ms:.1f} ms"
+          + (" (first key in a fresh process, excluded from min/max)" if idx == 0 else ""))
 if lat:
-    print(f"latency ms: min={min(lat):.1f} max={max(lat):.1f}")
+    print(f"warm latency ms: min={min(lat):.1f} max={max(lat):.1f}; first key (cold): {first_ms}")
     if max(lat) > 1000:
         bad += 1
 sys.exit(1 if bad else 0)

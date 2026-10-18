@@ -87,12 +87,14 @@ def main():
         f.write(str(tid))
     print(f"ui_host: tid={tid} hwnd={(hwnd or 0):#x} fg={u32.GetForegroundWindow() == hwnd}", flush=True)
     pump(6)  # let the TIP load and publish its initial state
-    for vk in vks:
+    for n, vk in enumerate(vks):
         u32.SetForegroundWindow(hwnd)
         u32.SetFocus(edit)
         print(f"ui_host: send vk={vk:#x} t_ns={time.time_ns()}", flush=True)
         send_vk(vk)
-        pump(3)
+        # The first key in a fresh process took ~3.1 s to take effect in every CI run (a new Mozc
+        # session is created); wait it out so the next key does not arrive mid-activation and get lost.
+        pump(7 if n == 0 else 3)
     pump(2)
 
 

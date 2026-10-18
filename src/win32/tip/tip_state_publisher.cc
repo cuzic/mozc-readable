@@ -71,6 +71,19 @@ class ThreadSlot {
     if (mapping_ != nullptr) ::CloseHandle(mapping_);
   }
 
+  // True when the block already holds exactly this state (nothing to publish).
+  bool Unchanged(bool eo, uint32_t em, bool to, uint32_t tm) const {
+    return state_ != nullptr && has_last_ && last_[0] == (eo ? 1u : 0u) &&
+           last_[1] == em && last_[2] == (to ? 1u : 0u) && last_[3] == tm;
+  }
+  void Remember(bool eo, uint32_t em, bool to, uint32_t tm) {
+    last_[0] = eo ? 1u : 0u;
+    last_[1] = em;
+    last_[2] = to ? 1u : 0u;
+    last_[3] = tm;
+    has_last_ = true;
+  }
+
   TipSharedState* Get() {
     if (state_ != nullptr || tried_) return state_;
     tried_ = true;
@@ -106,6 +119,8 @@ class ThreadSlot {
   HANDLE mapping_ = nullptr;
   TipSharedState* state_ = nullptr;
   bool tried_ = false;
+  bool has_last_ = false;
+  uint32_t last_[4] = {};
 };
 
 }  // namespace
@@ -115,6 +130,14 @@ void TipStatePublisher::Publish(bool effective_open, int effective_mode,
   thread_local ThreadSlot slot;
   TipSharedState* s = slot.Get();
   if (s == nullptr) return;
+  // Every mutator of TipInputModeManager calls in here, mostly without any change (focus moves,
+  // mouse clicks). Do not bump seq or wake the readers for those.
+  if (slot.Unchanged(effective_open, static_cast<uint32_t>(effective_mode),
+                     tsf_open, static_cast<uint32_t>(tsf_mode))) {
+    return;
+  }
+  slot.Remember(effective_open, static_cast<uint32_t>(effective_mode), tsf_open,
+                static_cast<uint32_t>(tsf_mode));
 
   volatile LONG* seq = reinterpret_cast<volatile LONG*>(&s->seq);
   ::InterlockedIncrement(seq);  // odd: writing (full barrier)
