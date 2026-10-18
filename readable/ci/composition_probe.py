@@ -262,7 +262,14 @@ def main():
     k_after = s["key_seq"]
     s = p.settle(k_after, lambda s: s["phase"] == 2)
     result("HARD", "phase=2 after Space (converting)", s and s["phase"] == 2, f"delta={d} {fmt(s)}")
-    result("SOFT", "candidate_category=CONVERSION(3) after Space", s and s["cat"] == 3, fmt(s))
+    print(f"probe: info candidate_category after the 1st Space: {s['cat'] if s else None}", flush=True)
+    for n in (2, 3):  # the candidate list may appear only on a later Space press: observe
+        if s and s["cat"] == 3:
+            break
+        s, d = p.press(VK_SPACE)
+        s = p.settle(s["key_seq"], lambda s: True)
+        print(f"probe: info candidate_category after Space #{n}: {s['cat'] if s else None} phase={s['phase'] if s else None}", flush=True)
+    result("SOFT", "candidate_category=CONVERSION(3) within 3 Space presses", s and s["cat"] == 3, fmt(s))
 
     s, d = p.press(VK_BACK)  # BackSpace while converting: observation (R2-M3)
     k_after = s["key_seq"]
