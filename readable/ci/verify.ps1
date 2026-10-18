@@ -70,13 +70,18 @@ $tmp = $env:RUNNER_TEMP
 # Each step waits for the expected published state and re-sends the key if it was lost.
 $keys = 'F2=1:1,F1=1:2,F0=1:3,F2=1:1,19=0:*'
 
+# Every `Start-Process python` below uses -NoNewWindow. Without it each console python process gets its own console
+# window (a Windows Terminal window on this runner) which takes the foreground, and the key the window process is
+# sending at that moment goes to that console instead: the 'first key lost, resend after 8 s' seen in this CI was
+# exactly that, in the unmodified Mozc as well (readable/ci/first_key_experiment.ps1, run 39104699356: every
+# failed probe had fg_class=CASCADIA_HOSTING_WINDOW_CLASS).
 function Run-Scenario($name, $readerMode, $keys) {
   $tidFile = Join-Path $tmp "tid_$name.txt"
   $uiOut = Join-Path $tmp "ui_$name.out"; $rdOut = Join-Path $tmp "rd_$name.out"
   Remove-Item $tidFile -ErrorAction SilentlyContinue
-  $ui = Start-Process python -ArgumentList "`"$here\ui_host.py`" `"$tidFile`" $keys" -PassThru -RedirectStandardOutput $uiOut -RedirectStandardError "$uiOut.err"
+  $ui = Start-Process python -ArgumentList "`"$here\ui_host.py`" `"$tidFile`" $keys" -PassThru -NoNewWindow -RedirectStandardOutput $uiOut -RedirectStandardError "$uiOut.err"
   $rdArgs = "`"$here\reader.py`" `"$tidFile`" 30 $readerMode"
-  $rd = Start-Process python -ArgumentList $rdArgs -PassThru -RedirectStandardOutput $rdOut -RedirectStandardError "$rdOut.err"
+  $rd = Start-Process python -ArgumentList $rdArgs -PassThru -NoNewWindow -RedirectStandardOutput $rdOut -RedirectStandardError "$rdOut.err"
   $rd.WaitForExit(60000) | Out-Null
   if (-not $ui.HasExited) { $ui.WaitForExit(20000) | Out-Null }
   Write-Host "--- $name ui_host:"; Get-Content $uiOut, "$uiOut.err" -ErrorAction SilentlyContinue | Out-Host
@@ -120,7 +125,7 @@ function Run-App($label, $exe, $exeArgs, $class, $procName) {
   $p = Start-Process @sp
   Start-Sleep -Seconds 6
   $out = Join-Path $tmp "app_$label.out"
-  $d = Start-Process python -ArgumentList "`"$here\drive_foreground.py`" $class F2=1:1,F1=1:2,F0=1:3,F2=1:1,19=0:* 30" -PassThru -Wait -RedirectStandardOutput $out -RedirectStandardError "$out.err"
+  $d = Start-Process python -ArgumentList "`"$here\drive_foreground.py`" $class F2=1:1,F1=1:2,F0=1:3,F2=1:1,19=0:* 30" -PassThru -NoNewWindow -Wait -RedirectStandardOutput $out -RedirectStandardError "$out.err"
   Get-Content $out, "$out.err" -ErrorAction SilentlyContinue | Out-Host
   Write-Host "modules mozc_tip* loaded in ${procName}:"
   Get-Process -Name $procName -ErrorAction SilentlyContinue | ForEach-Object {
@@ -147,7 +152,7 @@ $acDir = Join-Path $tmp 'ac'
 $acLaunchOut = Join-Path $tmp 'ac_launch.out'
 # 60 s idle is only an upper bound now: the child is stopped as soon as the drive finishes (below). The drive
 # needs about 25 s after the 12 s head start (measured: run 39097062197), and each lost first key adds 8 s.
-$acLaunch = Start-Process python -ArgumentList "`"$here\ac_launch.py`" `"$acDir`" 60" -PassThru -RedirectStandardOutput $acLaunchOut -RedirectStandardError "$acLaunchOut.err"
+$acLaunch = Start-Process python -ArgumentList "`"$here\ac_launch.py`" `"$acDir`" 60" -PassThru -NoNewWindow -RedirectStandardOutput $acLaunchOut -RedirectStandardError "$acLaunchOut.err"
 Start-Sleep -Seconds 12
 Get-Content $acLaunchOut, "$acLaunchOut.err" -ErrorAction SilentlyContinue | Out-Host
 Write-Host '--- Application event log (crash records, last 5 minutes):'
@@ -155,7 +160,7 @@ Get-WinEvent -FilterHashtable @{ LogName = 'Application'; Id = 1000, 1001; Start
   Select-Object -First 4 | ForEach-Object { "[$($_.Id)] " + (($_.Message -split "`n" | Select-Object -First 12) -join ' | ') } | Out-Host
 Get-Content (Join-Path $acDir 'ac_ui_host.out') -ErrorAction SilentlyContinue | Out-Host
 $acOut = Join-Path $tmp 'app_appcontainer.out'
-$d = Start-Process python -ArgumentList "`"$here\drive_foreground.py`" ReadableCiHost F2=1:1,F1=1:2,F0=1:3,F2=1:1,19=0:* 30" -PassThru -Wait -RedirectStandardOutput $acOut -RedirectStandardError "$acOut.err"
+$d = Start-Process python -ArgumentList "`"$here\drive_foreground.py`" ReadableCiHost F2=1:1,F1=1:2,F0=1:3,F2=1:1,19=0:* 30" -PassThru -NoNewWindow -Wait -RedirectStandardOutput $acOut -RedirectStandardError "$acOut.err"
 Get-Content $acOut, "$acOut.err" -ErrorAction SilentlyContinue | Out-Host
 Write-Host '--- ac_launch (monitor) output after the drive:'
 # The drive is done. Stop the AppContainer child now instead of waiting out its idle time (the child lives
