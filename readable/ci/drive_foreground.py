@@ -20,6 +20,7 @@ u32.GetWindowThreadProcessId.argtypes = [wt.HWND, ctypes.POINTER(wt.DWORD)]
 u32.GetWindowThreadProcessId.restype = wt.DWORD
 u32.GetClassNameW.argtypes = [wt.HWND, wt.LPWSTR, ctypes.c_int]
 u32.IsWindowVisible.argtypes = [wt.HWND]
+u32.GetWindowTextW.argtypes = [wt.HWND, wt.LPWSTR, ctypes.c_int]
 u32.SetForegroundWindow.argtypes = [wt.HWND]
 u32.ShowWindow.argtypes = [wt.HWND, ctypes.c_int]
 u32.AttachThreadInput.argtypes = [wt.DWORD, wt.DWORD, wt.BOOL]
@@ -204,6 +205,16 @@ def main():
     print(f"drive: target={target} found={bool(hwnd)} fg_class={cls_of(fg) if fg else None} fg_tid={tid} fg_pid={pid}",
           flush=True)
     if not hwnd or cls_of(fg) != target:
+        print("drive: visible top-level windows (class, pid, tid, title):", flush=True)
+
+        def dump(h, _):
+            if u32.IsWindowVisible(h):
+                t, p = tid_pid(h)
+                title = ctypes.create_unicode_buffer(80)
+                u32.GetWindowTextW(h, title, 80)
+                print(f"  {cls_of(h)!r} pid={p} tid={t} title={title.value!r}", flush=True)
+            return True
+        u32.EnumWindows(ENUMPROC(dump), 0)
         sys.exit(2)
 
     # Give the application time to create its TSF thread manager and load the TIP.

@@ -94,8 +94,9 @@ def main():
     si.lpAttributeList = ctypes.cast(attr, ctypes.c_void_p)
     pi = PROCESS_INFORMATION()
     cmd = f'"{sys.executable}" -I -B "{os.path.join(here, "ui_host.py")}" "{os.path.join(workdir, "ac_tid.txt")}" "" {idle}'
-    ok = k32.CreateProcessW(None, cmd, None, None, True, 0x80000, None, workdir,
-                            ctypes.byref(si), ctypes.byref(pi))  # EXTENDED_STARTUPINFO_PRESENT
+    # EXTENDED_STARTUPINFO_PRESENT | CREATE_NO_WINDOW (a python.exe console window would take the foreground)
+    ok = k32.CreateProcessW(None, cmd, None, None, True, 0x80000 | 0x08000000, None, workdir,
+                            ctypes.byref(si), ctypes.byref(pi))
     if not ok:
         print(f"ac_launch: CreateProcessW failed, GetLastError={ctypes.get_last_error()}")
         sys.exit(1)

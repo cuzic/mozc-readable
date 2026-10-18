@@ -123,6 +123,9 @@ Get-Content (Join-Path $acDir 'ac_ui_host.out') -ErrorAction SilentlyContinue | 
 $acOut = Join-Path $tmp 'app_appcontainer.out'
 $d = Start-Process python -ArgumentList "`"$here\drive_foreground.py`" ReadableCiHost F2=1:1,F1=1:2,F0=1:3,F2=1:1,19=0:* 30" -PassThru -Wait -RedirectStandardOutput $acOut -RedirectStandardError "$acOut.err"
 Get-Content $acOut, "$acOut.err" -ErrorAction SilentlyContinue | Out-Host
+Write-Host '--- appcontainer ui_host output after the drive:'
+Get-Content (Join-Path $acDir 'ac_ui_host.out') -ErrorAction SilentlyContinue | Out-Host
+Write-Host ("python processes still alive: " + ((Get-Process -Name python -ErrorAction SilentlyContinue | ForEach-Object { $_.Id }) -join ','))
 Soft 'appcontainer: window became foreground' ($d.ExitCode -ne 2)
 Soft 'appcontainer: shared block readable from outside the AppContainer' ($d.ExitCode -notin 2, 3)
 Soft 'appcontainer: all steps reached' ($d.ExitCode -eq 0) "(exit $($d.ExitCode))"
