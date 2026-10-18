@@ -1,0 +1,110 @@
+name: readable upstream sync
+
+# google/mozc の新しいリリースタグを毎日確認し、readable ブランチの変更をそのタグへ載せ替えた
+# `sync/<タグ>` ブランチを作ってビルド・検証(readable-build.yaml)を起動する。
+# 成功すると readable-release.yaml が GitHub Release を公開する。
+# 載せ替えで衝突したら Issue を立てて止まる(自動では解決しない)。
+#
+# 必要な Secret: SYNC_TOKEN(contents・workflows・issues の書き込みができる PAT)。
+# readable の変更に .github/workflows/ が含まれるため、GITHUB_TOKEN では push が拒否される。
+
+on:
+  schedule:
+    - cron: '17 21 * * *'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: '追随する upstream のタグ(空なら最新)'
+        required: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: readable-upstream-sync
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      GH_TOKEN: ${{ secrets.SYNC_TOKEN }}
+    steps:
+      - name: Check the token
+        run: |
+          if [ -z "$GH_TOKEN" ]; then
+            echo "::error::Secret SYNC_TOKEN is not set"
+            exit 1
+          fi
+
+      - name: Checkout readable
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          ref: readable
+          fetch-depth: 0
+          submodules: false
+          token: ${{ secrets.SYNC_TOKEN }}
+
+      - name: Pick the upstream tag
+        id: pick
+        run: |
+          set -euo pipefail
+          TAG="${{ github.event.inputs.tag }}"
+          if [ -z "$TAG" ]; then
+            TAG=$(git ls-remote --tags --refs https://github.com/google/mozc.git \
+              | sed 's|.*refs/tags/||' | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -1)
+          fi
+          [ -n "$TAG" ] || { echo "::error::no upstream tag found"; exit 1; }
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "upstream tag: $TAG"
+
+      - name: Skip if already released or already in progress
+        id: skip
+        run: |
+          set -euo pipefail
+          TAG="${{ steps.pick.outputs.tag }}"
+          if gh release list --limit 200 --json tagName --jq '.[].tagName' | grep -q "^v${TAG}-readable\."; then
+            echo "already released for $TAG"; echo "skip=true" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          if git ls-remote --exit-code --heads origin "sync/${TAG}" >/dev/null 2>&1; then
+            echo "sync/${TAG} already exists (delete the branch to retry)"; echo "skip=true" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          echo "skip=false" >> "$GITHUB_OUTPUT"
+
+      - name: Rebase readable onto the tag
+        if: steps.skip.outputs.skip == 'false'
+        id: rebase
+        run: |
+          set -euo pipefail
+          TAG="${{ steps.pick.outputs.tag }}"
+          git config user.name  "mozc-readable sync"
+          git config user.email "actions@users.noreply.github.com"
+          git remote add upstream https://github.com/google/mozc.git
+          git fetch --no-tags upstream master "refs/tags/${TAG}:refs/tags/upstream-${TAG}"
+          READABLE_SHA=$(git rev-parse HEAD)
+          BASE=$(git merge-base HEAD upstream/master)
+          echo "readable=$READABLE_SHA base=$BASE"
+          git switch -c "sync/${TAG}"
+          if ! git rebase --onto "upstream-${TAG}" "$BASE"; then
+            git rebase --abort || true
+            echo "conflict=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "conflict=false" >> "$GITHUB_OUTPUT"
+          # readable-release.yaml が「載せ替え中に readable が動いていないか」を確かめる基準。
+          git push origin "${READABLE_SHA}:refs/heads/sync-base/${TAG}"
+          git push origin "sync/${TAG}"
+
+      - name: Open an issue on conflict
+        if: steps.skip.outputs.skip == 'false' && steps.rebase.outputs.conflict == 'true'
+        run: |
+          TAG="${{ steps.pick.outputs.tag }}"
+          gh issue create --title "upstream ${TAG} への載せ替えで衝突" \
+            --body "readable を upstream ${TAG} へ rebase したところ衝突しました。手元で \`git rebase --onto ${TAG} \$(git merge-base readable upstream/master)\` を実行して解消し、\`sync/${TAG}\` として push してください(push 後に readable-build.yaml を手動起動)。run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          exit 1
+
+      - name: Start build and verification
+        if: steps.skip.outputs.skip == 'false' && steps.rebase.outputs.conflict == 'false'
+        run: |
+          gh workflow run readable-build.yaml --ref "sync/${{ steps.pick.outputs.tag }}"
