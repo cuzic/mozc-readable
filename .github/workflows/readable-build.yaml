@@ -9,6 +9,10 @@ on:
     paths-ignore:
       - 'readable/docs/**'
       - 'readable/README.md'
+  # TODO(remove before merging): lets this branch be tested from a pull request (a plain branch cannot read
+  # the caches that `readable` saved).
+  pull_request:
+    branches: [readable]
 
 permissions:
   contents: read
@@ -21,6 +25,7 @@ concurrency:
 env:
   # The MSI is a function of src/ (its git tree id) and the build steps below. Bump this when you change
   # how the MSI is built (the Bazel command, the config, the toolchain steps), so a cached MSI is not reused.
+  # Changes to the runner image's toolchain are NOT detected: a cached MSI is reused while src/ is the same.
   BUILD_RECIPE: '1'
 
 jobs:
