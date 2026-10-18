@@ -33,6 +33,9 @@
 #include <msctf.h>
 #include <windows.h>
 
+#include <optional>
+
+#include "win32/tip/tip_state_publisher.h"
 #include "win32/tip/tip_text_service.h"
 
 namespace mozc {
@@ -49,8 +52,11 @@ class TipUiHandlerConventional {
   static void OnDeactivate();
   static void OnFocusChange(TipTextService* text_service,
                             ITfDocumentMgr* focused_document_manager);
+  // When `composition` is non-null and the context is managed, it receives the
+  // composition fields to publish (ADR-267 D7); it is left empty otherwise.
   static bool Update(TipTextService* text_service, ITfContext* context,
-                     TfEditCookie read_cookie);
+                     TfEditCookie read_cookie,
+                     std::optional<TipCompositionState>* composition = nullptr);
   static bool OnDllProcessAttach(HINSTANCE module_handle, bool static_loading);
   static void OnDllProcessDetach(HINSTANCE module_handle,
                                  bool process_shutdown);

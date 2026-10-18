@@ -35,6 +35,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -311,7 +312,8 @@ bool OnSessionCommandAsync(TipTextService* text_service, ITfContext* context,
 }
 
 bool TurnOnImeAndTryToReconvertFromIme(TipTextService* text_service,
-                                       ITfContext* context) {
+                                       ITfContext* context,
+                                       std::optional<uint32_t> key_seq) {
   if (context == nullptr) {
     return false;
   }
@@ -366,14 +368,15 @@ bool TurnOnImeAndTryToReconvertFromIme(TipTextService* text_service,
 
   if (need_async_edit_session) {
     return TipEditSession::OnOutputReceivedAsync(text_service, context,
-                                                 std::move(output));
+                                                 std::move(output), key_seq);
   } else {
     return TipEditSession::OnOutputReceivedSync(text_service, context,
-                                                std::move(output));
+                                                std::move(output), key_seq);
   }
 }
 
-bool UndoCommint(TipTextService* text_service, ITfContext* context) {
+bool UndoCommint(TipTextService* text_service, ITfContext* context,
+                 std::optional<uint32_t> key_seq) {
   if (context == nullptr) {
     return false;
   }
@@ -430,7 +433,7 @@ bool UndoCommint(TipTextService* text_service, ITfContext* context) {
 
   // Undo commit should be called from and only from the key event handler.
   return TipEditSession::OnOutputReceivedSync(text_service, context,
-                                              std::move(output));
+                                              std::move(output), key_seq);
 }
 
 bool IsCandidateFocused(const Output& output, uint32_t candidate_id) {
@@ -461,23 +464,28 @@ bool IsCandidateFocused(const Output& output, uint32_t candidate_id) {
 class SyncEditSessionImpl final : public TipComImplements<ITfEditSession> {
  public:
   SyncEditSessionImpl(wil::com_ptr_nothrow<TipTextService> text_service,
-                      wil::com_ptr_nothrow<ITfContext> context, Output output)
+                      wil::com_ptr_nothrow<ITfContext> context, Output output,
+                      std::optional<uint32_t> key_seq)
       : text_service_(std::move(text_service)),
         context_(std::move(context)),
-        output_(std::move(output)) {}
+        output_(std::move(output)),
+        key_seq_(key_seq) {}
 
   // The ITfEditSession interface method.
   // This function is called back by the TSF thread manager when an edit
   // request is granted.
   STDMETHODIMP DoEditSession(TfEditCookie write_cookie) override {
     return TipEditSessionImpl::UpdateContext(
-        text_service_.get(), context_.get(), write_cookie, output_);
+        text_service_.get(), context_.get(), write_cookie, output_, key_seq_);
   }
 
  private:
   wil::com_ptr_nothrow<TipTextService> text_service_;
   wil::com_ptr_nothrow<ITfContext> context_;
   Output output_;
+  // The number is taken when the edit session is requested, so an edit session
+  // that runs later (TF_ES_ASYNC) still carries the key that made `output_`.
+  std::optional<uint32_t> key_seq_;
 };
 
 enum EditSessionMode {
@@ -487,7 +495,8 @@ enum EditSessionMode {
 };
 
 bool OnOutputReceivedImpl(TipTextService* text_service, ITfContext* context,
-                          Output new_output, EditSessionMode mode) {
+                          Output new_output, EditSessionMode mode,
+                          std::optional<uint32_t> key_seq) {
   if (new_output.has_callback() &&
       new_output.callback().has_session_command() &&
       new_output.callback().session_command().has_type()) {
@@ -496,16 +505,17 @@ bool OnOutputReceivedImpl(TipTextService* text_service, ITfContext* context,
         new_output.callback().session_command().type();
     switch (type) {
       case SessionCommand::CONVERT_REVERSE:
-        return TurnOnImeAndTryToReconvertFromIme(text_service, context);
+        return TurnOnImeAndTryToReconvertFromIme(text_service, context,
+                                                 key_seq);
       case SessionCommand::UNDO:
-        return UndoCommint(text_service, context);
+        return UndoCommint(text_service, context, key_seq);
       default:
         break;
     }
   }
 
-  auto edit_session = MakeComPtr<SyncEditSessionImpl>(text_service, context,
-                                                      std::move(new_output));
+  auto edit_session = MakeComPtr<SyncEditSessionImpl>(
+      text_service, context, std::move(new_output), key_seq);
 
   TipThreadContext* thread_context = text_service->GetThreadContext();
 
@@ -619,16 +629,18 @@ class AsyncSetTextEditSessionImpl final
 
 bool TipEditSession::OnOutputReceivedSync(TipTextService* text_service,
                                           ITfContext* context,
-                                          Output new_output) {
+                                          Output new_output,
+                                          std::optional<uint32_t> key_seq) {
   return OnOutputReceivedImpl(text_service, context, std::move(new_output),
-                              kSync);
+                              kSync, key_seq);
 }
 
 bool TipEditSession::OnOutputReceivedAsync(TipTextService* text_service,
                                            ITfContext* context,
-                                           Output new_output) {
+                                           Output new_output,
+                                           std::optional<uint32_t> key_seq) {
   return OnOutputReceivedImpl(text_service, context, std::move(new_output),
-                              kAsync);
+                              kAsync, key_seq);
 }
 
 bool TipEditSession::OnLayoutChangedAsync(TipTextService* text_service,

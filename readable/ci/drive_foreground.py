@@ -32,6 +32,8 @@ k32.MapViewOfFile.restype = ctypes.c_void_p
 k32.MapViewOfFile.argtypes = [wt.HANDLE, wt.DWORD, wt.DWORD, wt.DWORD, ctypes.c_size_t]
 ENUMPROC = ctypes.WINFUNCTYPE(wt.BOOL, wt.HWND, wt.LPARAM)
 FMT = "<IIIIIIIIIIQ"
+FMT3 = "<10IQ8I"  # version 3, 80 bytes (ADR-267)
+V3_NAMES = "phase cat plen pcur key_seq scope_forced_mode server_ready composition_key_seq".split()
 
 
 class KEYBDINPUT(ctypes.Structure):
@@ -199,7 +201,7 @@ def state_of_thread(tid, pid=None):
             h = open_ac_section(pid, tid)
         if not h:
             return None
-        v = k32.MapViewOfFile(h, 4, 0, 0, 48)
+        v = k32.MapViewOfFile(h, 4, 0, 0, 0)  # the whole section: 48 bytes for version 2, 80 for version 3
         if not v:
             return None
         _views[tid] = v
@@ -208,6 +210,17 @@ def state_of_thread(tid, pid=None):
         if a[2] % 2 == 0 and a == struct.unpack(FMT, ctypes.string_at(v, 48)):
             return (a[3], a[4])
     return None
+
+
+def v3_of_thread(tid):
+    """The version 3 fields of the block (dict), or None for a version 2 block."""
+    v = _views.get(tid)
+    if not v:
+        return None
+    a = struct.unpack(FMT3, ctypes.string_at(v, 80))
+    if a[1] < 3:
+        return None
+    return dict(zip(V3_NAMES, a[11:]))
 
 
 def fg_state():
@@ -272,6 +285,8 @@ def main():
           flush=True)
     if st is None:
         sys.exit(3)
+    # Version 3 (80 bytes) is read from this foreground thread too, in an AppContainer as well (ADR-267).
+    print(f"drive: v3 fields for fg tid={tid}: {v3_of_thread(tid)}", flush=True)
 
     # Click into the page so that its input has the focus. The test page is one full-page input (verify.ps1), so a
     # click anywhere in the client area lands on it; the earlier page had a small input at the top, and a click on the

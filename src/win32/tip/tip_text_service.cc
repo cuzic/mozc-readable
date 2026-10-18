@@ -829,6 +829,9 @@ class TipTextServiceImpl
       eaten = &dummy_eaten;
     }
     *eaten = FALSE;
+    // mozc-readable (ADR-267 D1): a preserved key reaches OnKeyDown without an
+    // OnTestKeyDown, so it is counted here, at the entrance.
+    TipStatePublisher::CountKeyDown();
     const auto it = preserved_key_map_.find(guid);
     if (it == preserved_key_map_.end()) {
       return result;

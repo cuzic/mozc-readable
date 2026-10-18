@@ -60,6 +60,12 @@ class TipInputModeManagerImpl {
  protected:
   static StatePair GetOverriddenState(
       const StatePair& base_state, absl::Span<const InputScope> input_scopes);
+
+  // mozc-readable (ADR-267 D8): 0 when the input scopes do not decide a single
+  // mode, otherwise the mode GetOverriddenState forces, as
+  // commands::CompositionMode + 1. DIRECT (1) means "close the IME"; it does
+  // not change the conversion mode.
+  static uint32_t GetScopeForcedMode(absl::Span<const InputScope> input_scopes);
 };
 
 // In TSF, IME open/close mode and conversion mode are managed per thread not

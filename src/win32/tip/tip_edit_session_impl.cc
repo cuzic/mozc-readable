@@ -36,6 +36,7 @@
 #include <windows.h>
 
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -394,12 +395,19 @@ HRESULT UpdateComposition(TipTextService* text_service, ITfContext* context,
 }
 
 HRESULT UpdatePrivateContext(TipTextService* text_service, ITfContext* context,
-                             TfEditCookie write_cookie, const Output& output) {
+                             TfEditCookie write_cookie, const Output& output,
+                             std::optional<uint32_t> key_seq) {
   TipPrivateContext* private_context = text_service->GetPrivateContext(context);
   if (private_context == nullptr) {
     return S_FALSE;
   }
   *private_context->mutable_last_output() = output;
+  // mozc-readable (ADR-267 D5): remember which key-down produced this output.
+  // An output that no key produced keeps the previous number.
+  private_context->set_last_output_is_test(false);
+  if (key_seq.has_value()) {
+    private_context->set_last_output_key_seq(*key_seq);
+  }
   if (!output.has_status()) {
     return S_FALSE;
   }
@@ -465,9 +473,10 @@ HRESULT UpdatePreeditAndComposition(TipTextService* text_service,
 HRESULT DoEditSessionInComposition(TipTextService* text_service,
                                    ITfContext* context,
                                    TfEditCookie write_cookie,
-                                   const Output& output) {
-  const HRESULT result =
-      UpdatePrivateContext(text_service, context, write_cookie, output);
+                                   const Output& output,
+                                   std::optional<uint32_t> key_seq) {
+  const HRESULT result = UpdatePrivateContext(text_service, context,
+                                              write_cookie, output, key_seq);
   if (FAILED(result)) {
     return result;
   }
@@ -479,7 +488,8 @@ HRESULT DoEditSessionAfterComposition(TipTextService* text_service,
                                       ITfContext* context,
                                       TfEditCookie write_cookie,
                                       const Output& output) {
-  return UpdatePrivateContext(text_service, context, write_cookie, output);
+  return UpdatePrivateContext(text_service, context, write_cookie, output,
+                              std::nullopt);
 }
 
 HRESULT OnEndEditImpl(TipTextService* text_service, ITfContext* context,
@@ -639,9 +649,10 @@ HRESULT TipEditSessionImpl::OnCompositionTerminated(
 HRESULT TipEditSessionImpl::UpdateContext(TipTextService* text_service,
                                           ITfContext* context,
                                           TfEditCookie write_cookie,
-                                          const commands::Output& output) {
-  const HRESULT result =
-      DoEditSessionInComposition(text_service, context, write_cookie, output);
+                                          const commands::Output& output,
+                                          std::optional<uint32_t> key_seq) {
+  const HRESULT result = DoEditSessionInComposition(
+      text_service, context, write_cookie, output, key_seq);
   UpdateUI(text_service, context, write_cookie);
   return result;
 }

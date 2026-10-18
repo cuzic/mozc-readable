@@ -22,17 +22,23 @@ k32.OpenEventW.argtypes = [wt.DWORD, wt.BOOL, wt.LPCWSTR]
 k32.WaitForSingleObject.argtypes = [wt.HANDLE, wt.DWORD]
 SYNCHRONIZE = 0x00100000
 FILE_MAP_READ = 4
-FMT = "<IIIIIIIIIIQ"  # TipSharedState, 48 bytes
-SIZE = struct.calcsize(FMT)
-assert SIZE == 48
+FMT2 = "<IIIIIIIIIIQ"  # TipSharedState version 2, 48 bytes
+FMT3 = "<10IQ8I"        # version 3, 80 bytes: phase cat plen pcur key_seq scope_forced_mode server_ready composition_key_seq
+SIZE = 80               # the section is mapped whole (size 0); a version 2 block is read as its first 48 bytes
+assert struct.calcsize(FMT2) == 48 and struct.calcsize(FMT3) == 80
+
+
+def unpack(raw):
+    a = struct.unpack(FMT2, raw[:48])
+    return a + (struct.unpack(FMT3, raw)[11:] if a[1] >= 3 else ())
 
 
 def snapshot(view):
     for _ in range(100):
-        a = struct.unpack(FMT, ctypes.string_at(view, SIZE))
+        a = unpack(ctypes.string_at(view, SIZE))
         if a[2] % 2:
             continue
-        b = struct.unpack(FMT, ctypes.string_at(view, SIZE))
+        b = unpack(ctypes.string_at(view, SIZE))
         if a[2] == b[2]:
             return a
     return None
@@ -56,7 +62,7 @@ def main():
                 continue
             h = k32.OpenFileMappingW(FILE_MAP_READ, False, f"Local\\mozc-readable-ime-{tid}")
             if h:
-                view = k32.MapViewOfFile(h, FILE_MAP_READ, 0, 0, SIZE)
+                view = k32.MapViewOfFile(h, FILE_MAP_READ, 0, 0, 0)
                 print(f"reader: opened mapping for tid={tid}", flush=True)
         if use_event and view and ev is None:
             ev = k32.OpenEventW(SYNCHRONIZE, False, "Local\\mozc-readable-ime-changed")
@@ -73,7 +79,9 @@ def main():
                     seen.append(state)
                     print(f"reader: seq={s[2]} eff_open={s[3]} eff_mode={s[4]} "
                           f"tsf_open={s[5]} tsf_mode={s[6]} tid={s[7]} pid={s[8]} active={s[9]} version={s[1]} "
-                          f"t_ns={time.time_ns()}", flush=True)
+                          + (f"phase={s[11]} cat={s[12]} plen={s[13]} pcur={s[14]} key_seq={s[15]} sfm={s[16]} "
+                             f"srv={s[17]} cks={s[18]} " if len(s) > 11 else "")
+                          + f"t_ns={time.time_ns()}", flush=True)
         if not (use_event and ev):
             time.sleep(0.02)
     print(f"reader: wakes={wakes}", flush=True)
