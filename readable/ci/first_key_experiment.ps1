@@ -23,13 +23,22 @@ $l[0].InputMethodTips.Add("0411:$Clsid$Profile")
 Set-WinUserLanguageList $l -Force
 Write-Host ((Get-WinUserLanguageList | ForEach-Object { "$($_.LanguageTag): $($_.InputMethodTips -join ',')" }) -join "`n")
 
-function Run-Probe($delay) {
+function Run-Probe($delay, [switch]$WithConsoleNeighbour) {
   $server = [bool](Get-Process -Name mozc_server -ErrorAction SilentlyContinue)
   $out = Join-Path $env:RUNNER_TEMP "probe_$([guid]::NewGuid().ToString('N')).out"
   # NOT `-Wait`: it also waits for descendant processes, and the TIP loaded into this python process starts
   # mozc_server.exe, which never exits (run 39102127100 hung in the warm-up for 30 minutes).
+  # The neighbour imitates verify.ps1: a console python process (the shared-memory reader) started right after the
+  # window process.  It is started FIRST here so that it is up when the probe's key is sent only if the probe
+  # waits long enough; with a short delay its console window appears around the moment of the key.
+  $nb = $null
+  if ($WithConsoleNeighbour) {
+    $nbOut = "$out.neighbour"
+    $nb = Start-Process python -ArgumentList '-c "import time; time.sleep(6)"' -PassThru -RedirectStandardOutput $nbOut -RedirectStandardError "$nbOut.err"
+  }
   $pr = Start-Process python -ArgumentList "`"$here\first_key_probe.py`" $delay" -PassThru -RedirectStandardOutput $out -RedirectStandardError "$out.err"
   if (-not $pr.WaitForExit(60000)) { Write-Host "probe (delay $delay) did not exit in 60 s; killing it"; $pr.Kill() }
+  if ($nb -and -not $nb.HasExited) { $nb.Kill() }
   $line = (Get-Content $out -ErrorAction SilentlyContinue | Where-Object { $_ -like 'RESULT*' } | Select-Object -First 1)
   if (-not $line) { $line = "RESULT delay=$delay text=<no result, exit $($pr.ExitCode)> ok=False"; Get-Content "$out.err" -ErrorAction SilentlyContinue | Out-Host }
   return [pscustomobject]@{ Delay = $delay; Server = $server; Line = $line; Ok = ($line -match 'ok=True') }
@@ -41,18 +50,25 @@ Write-Host "warm-up: $($w.Line) (mozc_server was running before it: $($w.Server)
 
 Write-Host "== measurement: product=$Product"
 $rows = @()
-foreach ($d in $Delays.Split(',')) {
-  for ($i = 1; $i -le $Repeats; $i++) {
-    $r = Run-Probe $d
-    Write-Host ("delay={0,-4} run={1} server_was_running={2} -> {3}" -f $d, $i, $r.Server, $r.Line)
-    $rows += $r
+foreach ($variant in @('alone', 'with-console-neighbour')) {
+  Write-Host "-- variant: $variant"
+  foreach ($d in $Delays.Split(',')) {
+    for ($i = 1; $i -le $Repeats; $i++) {
+      $r = if ($variant -eq 'alone') { Run-Probe $d } else { Run-Probe $d -WithConsoleNeighbour }
+      $r | Add-Member -NotePropertyName Variant -NotePropertyValue $variant
+      Write-Host ("delay={0,-4} run={1} server_was_running={2} -> {3}" -f $d, $i, $r.Server, $r.Line)
+      $rows += $r
+    }
   }
 }
 Write-Host ''
-Write-Host "== summary ($Product): first key took effect / runs, per delay before the key"
-foreach ($g in ($rows | Group-Object Delay)) {
+Write-Host "== summary ($Product): first key took effect / runs, per variant and delay before the key"
+foreach ($g in ($rows | Group-Object Variant, Delay)) {
   $ok = ($g.Group | Where-Object { $_.Ok }).Count
-  Write-Host ("  delay {0,-4} s : {1}/{2}" -f $g.Name, $ok, $g.Count)
+  $self = ($g.Group | Where-Object { $_.Line -match 'fg_self=True' }).Count
+  Write-Host ("  {0,-34} : {1}/{2} took effect; window was in the foreground at the key: {3}/{2}" -f $g.Name, $ok, $g.Count, $self)
 }
-$all = ($rows | Where-Object { $_.Ok }).Count
-Write-Host ("  total        : {0}/{1}" -f $all, $rows.Count)
+foreach ($v in @('alone', 'with-console-neighbour')) {
+  $sub = $rows | Where-Object { $_.Variant -eq $v }
+  Write-Host ("  total {0,-24} : {1}/{2}" -f $v, ($sub | Where-Object { $_.Ok }).Count, $sub.Count)
+}

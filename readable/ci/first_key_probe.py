@@ -21,6 +21,8 @@ u32.CreateWindowExW.argtypes = [wt.DWORD, wt.LPCWSTR, wt.LPCWSTR, wt.DWORD, ctyp
                                 ctypes.c_int, ctypes.c_int, wt.HWND, wt.HMENU, wt.HINSTANCE, wt.LPVOID]
 u32.CreateWindowExW.restype = wt.HWND
 u32.SetForegroundWindow.argtypes = [wt.HWND]
+u32.GetForegroundWindow.restype = wt.HWND
+u32.GetClassNameW.argtypes = [wt.HWND, wt.LPWSTR, ctypes.c_int]
 u32.SetFocus.argtypes = [wt.HWND]
 u32.SetFocus.restype = wt.HWND
 u32.ShowWindow.argtypes = [wt.HWND, ctypes.c_int]
@@ -92,6 +94,14 @@ def main():
     pump(delay)                        # <- the variable under test: how long the thread lives before the key
     u32.SetForegroundWindow(hwnd)
     u32.SetFocus(edit)
+    # Who is in the foreground at the moment the key is sent?  (A console window opened by a process started at
+    # the same time can take the foreground, and the key then goes to that window.)
+    fg = u32.GetForegroundWindow()
+    cls = ctypes.create_unicode_buffer(128)
+    if fg:
+        u32.GetClassNameW(fg, cls, 128)
+    fg_self = bool(fg) and fg == hwnd
+    fg_class = cls.value
     send_vk(0xF2)                      # Hiragana key: IMEOn while closed
     pump(1.0)
     send_vk(0x41)                      # 'A'
@@ -103,7 +113,7 @@ def main():
     text = buf.value
     # ASCII only: stdout is redirected and its code page (cp1252 on the runner) cannot encode U+3042;
     # run 39104280272 crashed in this print although the text did hold U+3042.
-    print(f"RESULT delay={delay} text={ascii(text)} ok={text == chr(0x3042)} t_window_ms={t_window_ms}", flush=True)
+    print(f"RESULT delay={delay} text={ascii(text)} ok={text == chr(0x3042)} t_window_ms={t_window_ms} fg_self={fg_self} fg_class={ascii(fg_class)}", flush=True)
 
 
 main()
