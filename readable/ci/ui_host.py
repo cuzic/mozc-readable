@@ -7,6 +7,7 @@ is written to the file given as argv[1]; reader.py (a separate process) reads it
 import ctypes
 import ctypes.wintypes as wt
 import faulthandler
+import os
 import struct
 import sys
 import time
@@ -146,8 +147,9 @@ def main():
             if ok:
                 break
         pump(1)
-    if steps:
-        # Deactivation: switching this thread to a layout without a TIP must reset `active`.
+    if steps and os.environ.get("MOZC_CI_DEACTIVATE") == "1":
+        # Deactivation (run LAST, in its own process: switching the layout is global when "a different
+        # input method per app window" is off, so every process started afterwards would have no TIP): switching this thread to a layout without a TIP must reset `active`.
         print(f"ui_host: before deactivate: active={read_active(tid)}", flush=True)
         u32.LoadKeyboardLayoutW.restype = ctypes.c_void_p
         u32.ActivateKeyboardLayout.argtypes = [ctypes.c_void_p, wt.UINT]

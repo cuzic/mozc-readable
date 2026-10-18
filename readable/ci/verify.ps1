@@ -82,8 +82,6 @@ Check 'open: IME turned off is visible (last state)' ($t -match 'eff_open=0 eff_
 
 Write-Host '== E2. event-driven reader and key->reader latency'
 $ev = Run-Scenario 'event' 'event' $keys
-$uiT = Get-Content $poll.Ui -Raw
-Soft 'active becomes 0 after the thread switches to a layout without the TIP' ($uiT -match 'deactivate: active=0')
 $e = Get-Content $ev.Rd -Raw
 Check 'reader opened the change event' ($e -match 'opened change event')
 Check 'event woke the reader at least once' ($e -match 'wakes=[1-9]')
@@ -142,5 +140,13 @@ Soft 'appcontainer: window became foreground' ($d.ExitCode -ne 2)
 Soft 'appcontainer: shared block readable from outside the AppContainer' ($d.ExitCode -notin 2, 3)
 Soft 'appcontainer: all steps reached' ($d.ExitCode -eq 0) "(exit $($d.ExitCode))"
 Get-Process -Name python -ErrorAction SilentlyContinue | Where-Object { $_.Id -ne $PID } | Stop-Process -Force -ErrorAction SilentlyContinue
+
+Write-Host '== H. deactivation (LAST: switching the layout is global, so nothing may run after this that needs the TIP)'
+$env:MOZC_CI_DEACTIVATE = '1'
+$de = Run-Scenario 'deactivate' '' 'F2=1:1'
+Remove-Item Env:\MOZC_CI_DEACTIVATE
+$deT = Get-Content $de.Ui -Raw
+Soft 'active=1 before the layout switch' ($deT -match 'before deactivate: active=1')
+Soft 'active becomes 0 after the thread switches to a layout without the TIP' ($deT -match 'deactivate: active=0')
 
 if ($fail -gt 0) { Write-Host "$fail check(s) failed"; exit 1 }
