@@ -83,4 +83,34 @@ Check 'event woke the reader at least once' ($e -match 'wakes=[1-9]')
 python "$here\summarize.py" $ev.Ui $ev.Rd
 Check 'every key produced a state change within 1000 ms' ($LASTEXITCODE -eq 0)
 
+Write-Host '== G. other applications: is the state published for the foreground thread of a TSF-native app?'
+# Soft checks: this is the question the project exists for, not a regression gate (yet).
+function Soft($name, $ok, $detail = '') {
+  if ($ok) { Write-Host "PASS  $name $detail" } else { Write-Host "::warning::NO    $name $detail" }
+}
+function Run-App($label, $exe, $exeArgs, $class, $procName) {
+  Write-Host "--- $label"
+  $p = Start-Process $exe -ArgumentList $exeArgs -PassThru
+  Start-Sleep -Seconds 6
+  $out = Join-Path $tmp "app_$label.out"
+  $d = Start-Process python -ArgumentList "`"$here\drive_foreground.py`" $class F2=1:1,F1=1:2,F0=1:3,F2=1:1,19=0:* 30" -PassThru -Wait -RedirectStandardOutput $out -RedirectStandardError "$out.err"
+  Get-Content $out, "$out.err" -ErrorAction SilentlyContinue | Out-Host
+  Write-Host "modules mozc_tip* loaded in ${procName}:"
+  Get-Process -Name $procName -ErrorAction SilentlyContinue | ForEach-Object {
+    try { $m = $_.Modules | Where-Object { $_.ModuleName -like 'mozc_tip*' }; if ($m) { "  pid $($_.Id): $($m.ModuleName -join ', ')" } } catch {}
+  } | Out-Host
+  Soft "$label: target window became foreground" ($d.ExitCode -ne 2)
+  Soft "$label: shared block exists for the foreground thread" ($d.ExitCode -notin 2, 3)
+  Soft "$label: all steps (on / katakana / alnum / hiragana / off) reached" ($d.ExitCode -eq 0) "(exit $($d.ExitCode))"
+  Get-Process -Name $procName -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+}
+$page = Join-Path $tmp 'input.html'
+Set-Content $page '<!doctype html><title>t</title><input id=a autofocus style="width:90%;font-size:30px">' -Encoding UTF8
+$chrome = @("${env:ProgramFiles}\Google\Chrome\Application\chrome.exe", "${env:ProgramFiles(x86)}\Google\Chrome\Application\chrome.exe") | Where-Object { Test-Path $_ } | Select-Object -First 1
+if ($chrome) {
+  $udd = Join-Path $tmp 'chrome-profile'
+  Run-App 'chrome' $chrome "--user-data-dir=`"$udd`" --no-first-run --no-default-browser-check --new-window `"file:///$($page -replace '\\','/')`"" 'Chrome_WidgetWin_1' 'chrome'
+} else { Write-Host '::warning::chrome.exe not found on the runner' }
+Run-App 'notepad' 'notepad.exe' '' 'Notepad' 'notepad'
+
 if ($fail -gt 0) { Write-Host "$fail check(s) failed"; exit 1 }

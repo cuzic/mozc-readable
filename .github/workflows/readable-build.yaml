@@ -87,7 +87,7 @@ jobs:
     # coexistence with the official Mozc, the shared-memory state, and uninstall.
     needs: build_on_x64
     runs-on: windows-2025
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
