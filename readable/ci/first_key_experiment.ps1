@@ -26,7 +26,10 @@ Write-Host ((Get-WinUserLanguageList | ForEach-Object { "$($_.LanguageTag): $($_
 function Run-Probe($delay) {
   $server = [bool](Get-Process -Name mozc_server -ErrorAction SilentlyContinue)
   $out = Join-Path $env:RUNNER_TEMP "probe_$([guid]::NewGuid().ToString('N')).out"
-  $pr = Start-Process python -ArgumentList "`"$here\first_key_probe.py`" $delay" -PassThru -Wait -RedirectStandardOutput $out -RedirectStandardError "$out.err"
+  # NOT `-Wait`: it also waits for descendant processes, and the TIP loaded into this python process starts
+  # mozc_server.exe, which never exits (run 39102127100 hung in the warm-up for 30 minutes).
+  $pr = Start-Process python -ArgumentList "`"$here\first_key_probe.py`" $delay" -PassThru -RedirectStandardOutput $out -RedirectStandardError "$out.err"
+  if (-not $pr.WaitForExit(60000)) { Write-Host "probe (delay $delay) did not exit in 60 s; killing it"; $pr.Kill() }
   $line = (Get-Content $out -ErrorAction SilentlyContinue | Where-Object { $_ -like 'RESULT*' } | Select-Object -First 1)
   if (-not $line) { $line = "RESULT delay=$delay text=<no result, exit $($pr.ExitCode)> ok=False"; Get-Content "$out.err" -ErrorAction SilentlyContinue | Out-Host }
   return [pscustomobject]@{ Delay = $delay; Server = $server; Line = $line; Ok = ($line -match 'ok=True') }
