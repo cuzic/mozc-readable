@@ -134,6 +134,7 @@ def main():
     scenario(p, "S2 warm, IME on, 'ka'", [K, A])
     w_k = scenario(p, "S3 warm, IME on, 'k' only (pending romaji)", [K])
     w_kaki = scenario(p, "S5 warm, IME on, 'kaki'", [K, A, K, I])
+    clear(p)  # drop the composition left by 'kaki', otherwise Kanji does not close the IME (run 39122083119 S6)
     send_vk(VK_KANJI)  # IME off on purpose: every key is a literal
     p.wait(lambda s: s["eo"] == 0, 8)
     closed = scenario(p, "S6 IME closed (Kanji), 'kaki'", [K, A, K, I])
