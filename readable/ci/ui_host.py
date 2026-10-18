@@ -11,6 +11,19 @@ import time
 
 u32 = ctypes.windll.user32
 k32 = ctypes.windll.kernel32
+u32.CreateWindowExW.argtypes = [wt.DWORD, wt.LPCWSTR, wt.LPCWSTR, wt.DWORD, ctypes.c_int, ctypes.c_int,
+                                ctypes.c_int, ctypes.c_int, wt.HWND, wt.HMENU, wt.HINSTANCE, wt.LPVOID]
+u32.CreateWindowExW.restype = wt.HWND
+u32.SetForegroundWindow.argtypes = [wt.HWND]
+u32.SetFocus.argtypes = [wt.HWND]
+u32.SetFocus.restype = wt.HWND
+u32.ShowWindow.argtypes = [wt.HWND, ctypes.c_int]
+u32.GetForegroundWindow.restype = wt.HWND
+u32.PeekMessageW.argtypes = [ctypes.POINTER(wt.MSG), wt.HWND, wt.UINT, wt.UINT, wt.UINT]
+u32.TranslateMessage.argtypes = [ctypes.POINTER(wt.MSG)]
+u32.DispatchMessageW.argtypes = [ctypes.POINTER(wt.MSG)]
+k32.GetModuleHandleW.restype = wt.HMODULE
+k32.GetModuleHandleW.argtypes = [wt.LPCWSTR]
 u32.DefWindowProcW.argtypes = [wt.HWND, wt.UINT, wt.WPARAM, wt.LPARAM]
 u32.DefWindowProcW.restype = ctypes.c_ssize_t
 WNDPROC = ctypes.WINFUNCTYPE(ctypes.c_ssize_t, wt.HWND, wt.UINT, wt.WPARAM, wt.LPARAM)
@@ -72,7 +85,7 @@ def main():
     tid = k32.GetCurrentThreadId()
     with open(tid_file, "w") as f:
         f.write(str(tid))
-    print(f"ui_host: tid={tid} hwnd={hwnd:#x} fg={u32.GetForegroundWindow() == hwnd}", flush=True)
+    print(f"ui_host: tid={tid} hwnd={(hwnd or 0):#x} fg={u32.GetForegroundWindow() == hwnd}", flush=True)
     pump(6)  # let the TIP load and publish its initial state
     for vk in vks:
         u32.SetForegroundWindow(hwnd)

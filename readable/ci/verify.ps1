@@ -1,4 +1,4 @@
-# mozc-readable CI: install the MSI, verify it, publish/read the shared state, uninstall.
+# mozc-readable CI: install the MSI, verify it, publish/read the shared state (uninstall.ps1 follows).
 # Stages A-D are hard checks (exit 1). Stage E (activate the TIP and read published state)
 # is reported with ::warning:: while the activation procedure is still being established.
 param([Parameter(Mandatory)][string]$Msi)
@@ -52,10 +52,5 @@ $r = Start-Process python -ArgumentList "`"$here\reader.py`" `"$tidFile`" 22" -W
 if (-not $host_.HasExited) { $host_.WaitForExit(15000) | Out-Null }
 if ($r.ExitCode -eq 0) { Write-Host 'PASS  reader opened the shared state mapping from another process' }
 else { Write-Host "::warning::reader could not open the mapping (exit $($r.ExitCode)); TIP probably not activated in the CI session" }
-
-Write-Host '== F. uninstall'
-$u = Start-Process msiexec.exe -ArgumentList "/x `"$Msi`" /qn /norestart /l*v uninstall.log" -Wait -PassThru
-Check 'msiexec uninstall exit code' ($u.ExitCode -in 0, 3010) "($($u.ExitCode))"
-Check 'CLSID removed' (-not (Test-Path "Registry::HKEY_LOCAL_MACHINE\SOFTWARE\Classes\CLSID\$Clsid"))
 
 if ($fail -gt 0) { Write-Host "$fail check(s) failed"; exit 1 }
