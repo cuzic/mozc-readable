@@ -6,6 +6,12 @@
 #   state = E + E2, apps = G (Chrome, Notepad), appcontainer = the AppContainer check,
 #   deactivation = H (switches the keyboard layout, which is global to the session, so it needs a runner
 #   of its own). 'all' runs everything in this order, as before.
+# Where a new scenario goes: one that only needs the TIP loaded goes in the section that matches what it
+# looks at (state: shared-memory values and latency; apps: ordinary foreground apps; appcontainer: inside an
+# AppContainer). One that changes the state of the whole session (switching the input method or layout,
+# changing the language list or IME settings, starting or stopping a service) gets a section of its own,
+# like deactivation, so it runs on a separate runner. When you add a section, change the ValidateSet below
+# and `matrix.section` in .github/workflows/readable-build.yaml together.
 param([Parameter(Mandatory)][string]$Msi,
       [ValidateSet('all', 'state', 'apps', 'appcontainer', 'deactivation')][string]$Section = 'all')
 $ErrorActionPreference = 'Stop'
@@ -133,9 +139,9 @@ if (Want 'appcontainer') {
 Write-Host '--- appcontainer (the sandbox UWP apps run in): ui_host.py started inside an AppContainer'
 $acDir = Join-Path $tmp 'ac'
 $acLaunchOut = Join-Path $tmp 'ac_launch.out'
-# 45 s idle: the child lives only while ac_launch.py (its parent) lives, and the drive below needs about 25 s
-# after the 12 s head start (measured: run 39097062197, drive done within ~25 s of the start).
-$acLaunch = Start-Process python -ArgumentList "`"$here\ac_launch.py`" `"$acDir`" 45" -PassThru -RedirectStandardOutput $acLaunchOut -RedirectStandardError "$acLaunchOut.err"
+# 60 s idle is only an upper bound now: the child is stopped as soon as the drive finishes (below). The drive
+# needs about 25 s after the 12 s head start (measured: run 39097062197), and each lost first key adds 8 s.
+$acLaunch = Start-Process python -ArgumentList "`"$here\ac_launch.py`" `"$acDir`" 60" -PassThru -RedirectStandardOutput $acLaunchOut -RedirectStandardError "$acLaunchOut.err"
 Start-Sleep -Seconds 12
 Get-Content $acLaunchOut, "$acLaunchOut.err" -ErrorAction SilentlyContinue | Out-Host
 Write-Host '--- Application event log (crash records, last 5 minutes):'
@@ -146,7 +152,12 @@ $acOut = Join-Path $tmp 'app_appcontainer.out'
 $d = Start-Process python -ArgumentList "`"$here\drive_foreground.py`" ReadableCiHost F2=1:1,F1=1:2,F0=1:3,F2=1:1,19=0:* 30" -PassThru -Wait -RedirectStandardOutput $acOut -RedirectStandardError "$acOut.err"
 Get-Content $acOut, "$acOut.err" -ErrorAction SilentlyContinue | Out-Host
 Write-Host '--- ac_launch (monitor) output after the drive:'
-$acLaunch.WaitForExit(100000) | Out-Null
+# The drive is done. Stop the AppContainer child now instead of waiting out its idle time (the child lives
+# only while its parent ac_launch.py lives, so stopping the parent ends it). Print the exit code when
+# ac_launch ended by itself (a crash of the child before the drive finished).
+if ($acLaunch.HasExited) { Write-Host "ac_launch: exited by itself, exit code $($acLaunch.ExitCode)" }
+else { Stop-Process -Id $acLaunch.Id -Force -ErrorAction SilentlyContinue; Write-Host 'ac_launch: stopped after the drive' }
+Start-Sleep -Milliseconds 500
 Get-Content $acLaunchOut, "$acLaunchOut.err" -ErrorAction SilentlyContinue | Out-Host
 Write-Host '--- appcontainer ui_host output after the drive:'
 Get-Content (Join-Path $acDir 'ac_ui_host.out') -ErrorAction SilentlyContinue | Out-Host
