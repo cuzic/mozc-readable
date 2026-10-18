@@ -227,10 +227,13 @@ Write-Host '== J. version 3 fields (ADR-267 stage 1): composition_probe.py, in-p
 $env:MOZC_CI_DEACTIVATE = '1'
 $tidFile = Join-Path $tmp 'tid_composition.txt'
 $cpOut = Join-Path $tmp 'composition.out'
-$cp = Start-Process python -ArgumentList "`"$here\composition_probe.py`" `"$tidFile`"" -PassThru -NoNewWindow -Wait -RedirectStandardOutput $cpOut -RedirectStandardError "$cpOut.err"
+# Not `-Wait`: mozc_server is started by the TIP inside the probe, so it is a child of the probe holding the redirected
+# output handles, and -Wait would wait for it too (the first run of this section hung for 15 minutes on that).
+$cp = Start-Process python -ArgumentList "`\"$here\composition_probe.py`\" `\"$tidFile`\"" -PassThru -NoNewWindow -RedirectStandardOutput $cpOut -RedirectStandardError "$cpOut.err"
+if (-not $cp.WaitForExit(240000)) { Write-Host '::warning::composition_probe.py did not finish in 240 s; killing it'; Stop-Process -Id $cp.Id -Force -ErrorAction SilentlyContinue }
 Remove-Item Env:\MOZC_CI_DEACTIVATE
 Get-Content $cpOut, "$cpOut.err" -ErrorAction SilentlyContinue | Out-Host
-Check 'composition_probe.py ran to the end' ($cp.ExitCode -eq 0) "(exit $($cp.ExitCode))"
+Check 'composition_probe.py ran to the end' ($cp.HasExited -and $cp.ExitCode -eq 0) "(exit $($cp.ExitCode))"
 foreach ($line in (Get-Content $cpOut -ErrorAction SilentlyContinue)) {
   if ($line -match '^probe: (HARD|SOFT) (.+) ok=(True|False)') {
     if ($Matches[1] -eq 'HARD') { Check $Matches[2] ($Matches[3] -eq 'True') } else { Soft $Matches[2] ($Matches[3] -eq 'True') }
