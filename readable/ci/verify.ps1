@@ -90,7 +90,9 @@ function Soft($name, $ok, $detail = '') {
 }
 function Run-App($label, $exe, $exeArgs, $class, $procName) {
   Write-Host "--- $label"
-  $p = Start-Process $exe -ArgumentList $exeArgs -PassThru
+  $sp = @{ FilePath = $exe; PassThru = $true }
+  if ($exeArgs) { $sp.ArgumentList = $exeArgs }   # Start-Process rejects an empty -ArgumentList
+  $p = Start-Process @sp
   Start-Sleep -Seconds 6
   $out = Join-Path $tmp "app_$label.out"
   $d = Start-Process python -ArgumentList "`"$here\drive_foreground.py`" $class F2=1:1,F1=1:2,F0=1:3,F2=1:1,19=0:* 30" -PassThru -Wait -RedirectStandardOutput $out -RedirectStandardError "$out.err"
@@ -99,9 +101,9 @@ function Run-App($label, $exe, $exeArgs, $class, $procName) {
   Get-Process -Name $procName -ErrorAction SilentlyContinue | ForEach-Object {
     try { $m = $_.Modules | Where-Object { $_.ModuleName -like 'mozc_tip*' }; if ($m) { "  pid $($_.Id): $($m.ModuleName -join ', ')" } } catch {}
   } | Out-Host
-  Soft "$label: target window became foreground" ($d.ExitCode -ne 2)
-  Soft "$label: shared block exists for the foreground thread" ($d.ExitCode -notin 2, 3)
-  Soft "$label: all steps (on / katakana / alnum / hiragana / off) reached" ($d.ExitCode -eq 0) "(exit $($d.ExitCode))"
+  Soft "${label}: target window became foreground" ($d.ExitCode -ne 2)
+  Soft "${label}: shared block exists for the foreground thread" ($d.ExitCode -notin 2, 3)
+  Soft "${label}: all steps (on / katakana / alnum / hiragana / off) reached" ($d.ExitCode -eq 0) "(exit $($d.ExitCode))"
   Get-Process -Name $procName -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
 }
 $page = Join-Path $tmp 'input.html'
