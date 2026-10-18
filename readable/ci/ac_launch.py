@@ -101,6 +101,19 @@ def main():
         print(f"ac_launch: CreateProcessW failed, GetLastError={ctypes.get_last_error()}")
         sys.exit(1)
     print(f"ac_launch: started pid={pi.dwProcessId} in the AppContainer", flush=True)
+    # Report an early exit with its exit code (0xC0000005 etc. = native crash) instead of guessing.
+    import time
+    k32.GetExitCodeProcess.argtypes = [wt.HANDLE, ctypes.POINTER(wt.DWORD)]
+    t0 = time.time()
+    while time.time() - t0 < 25:
+        code = wt.DWORD()
+        k32.GetExitCodeProcess(pi.hProcess, ctypes.byref(code))
+        if code.value != 259:  # STILL_ACTIVE
+            print(f"ac_launch: AppContainer process EXITED after {time.time() - t0:.1f}s, exit code {code.value:#010x}",
+                  flush=True)
+            return
+        time.sleep(0.5)
+    print("ac_launch: AppContainer process still alive after 25 s", flush=True)
 
 
 main()
