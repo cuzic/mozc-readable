@@ -33,6 +33,9 @@
 #include <msctf.h>
 #include <windows.h>
 
+#include <cstdint>
+#include <optional>
+
 #include "protocol/commands.pb.h"
 #include "win32/tip/tip_text_service.h"
 
@@ -67,9 +70,12 @@ class TipEditSessionImpl {
   // - Updates candidate strings.
   // - Updates private context including IME On/Off state and input mode.
   // - Invokes UI update. (by calling UpdateUI)
-  static HRESULT UpdateContext(TipTextService* text_service,
-                               ITfContext* context, TfEditCookie write_cookie,
-                               const commands::Output& output);
+  // `key_seq` is the number of the key-down that produced `output` (ADR-267
+  // D5), or nullopt when no key did (the previous number is kept).
+  static HRESULT UpdateContext(
+      TipTextService* text_service, ITfContext* context,
+      TfEditCookie write_cookie, const commands::Output& output,
+      std::optional<uint32_t> key_seq = std::nullopt);
 
   // A core logic of UI handler. This function does
   // - Invokes UI update.

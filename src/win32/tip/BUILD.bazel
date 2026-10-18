@@ -202,6 +202,7 @@ mozc_cc_library(
     tags = MOZC_TAGS.WIN_ONLY,
     target_compatible_with = ["@platforms//os:windows"],
     deps = [
+        ":tip_state_publisher",
         ":tip_display_attributes",
         ":tip_dll_module",
         ":tip_edit_session",
@@ -350,6 +351,7 @@ mozc_cc_library(
         ":tip_edit_session",
         ":tip_input_mode_manager",
         ":tip_private_context_h",
+        ":tip_state_publisher",
         ":tip_status",
         ":tip_surrounding_text",
         ":tip_text_service",
@@ -632,6 +634,17 @@ mozc_cc_library(
 )
 
 mozc_cc_library(
+    name = "tip_state_publisher",
+    srcs = ["tip_state_publisher.cc"],
+    hdrs = ["tip_state_publisher.h"],
+    tags = MOZC_TAGS.WIN_ONLY,
+    target_compatible_with = ["@platforms//os:windows"],
+    deps = [
+        "//base/win32:win_sandbox",
+    ],
+)
+
+mozc_cc_library(
     name = "tip_status",
     srcs = ["tip_status.cc"],
     hdrs = ["tip_status.h"],
@@ -670,6 +683,7 @@ mozc_cc_library(
         ":tip_input_mode_manager",
         ":tip_private_context_h",
         ":tip_range_util",
+        ":tip_state_publisher",
         ":tip_status",
         ":tip_text_service",
         ":tip_thread_context",
@@ -784,6 +798,7 @@ mozc_cc_library(
     tags = MOZC_TAGS.WIN_ONLY,
     target_compatible_with = ["@platforms//os:windows"],
     deps = [
+        ":tip_state_publisher",
         "//protocol:commands_cc_proto",
         "//win32/base:conversion_mode_util",
         "//win32/base:indicator_visibility_tracker",

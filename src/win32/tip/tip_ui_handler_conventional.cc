@@ -34,6 +34,8 @@
 #include <windows.h>
 
 #include <cstddef>
+#include <cstdint>
+#include <optional>
 #include <utility>
 
 #include "absl/log/check.h"
@@ -95,10 +97,44 @@ size_t GetTargetPos(const commands::Output& output) {
   }
 }
 
+// The value of TipSharedState::phase (ADR-267 D1): 0 no preedit, 1 composing,
+// 2 converting (a segment is the focused one).
+uint32_t GetPhase(const commands::Output& output) {
+  if (!output.has_preedit()) {
+    return 0;
+  }
+  const Preedit& preedit = output.preedit();
+  if (preedit.segment_size() == 0) {
+    return 0;
+  }
+  for (int i = 0; i < preedit.segment_size(); ++i) {
+    if (preedit.segment(i).annotation() == Segment::HIGHLIGHT) {
+      return 2;
+    }
+  }
+  return 1;
+}
+
+uint32_t GetPreeditUtf16Len(const commands::Output& output) {
+  if (!output.has_preedit()) {
+    return 0;
+  }
+  const Preedit& preedit = output.preedit();
+  size_t len = 0;
+  for (int i = 0; i < preedit.segment_size(); ++i) {
+    len += WideCharsLen(preedit.segment(i).value());
+  }
+  return static_cast<uint32_t>(len);
+}
+
+// `candidate_category` receives the value of TipSharedState::candidate_category
+// (0 none, 1 SUGGESTION, 2 PREDICTION, 3 CONVERSION) for the window that is
+// actually shown, i.e. after the IsVisible check below (ADR-267 D7).
 bool FillVisibility(ITfUIElementMgr* ui_element_manager,
                     TipPrivateContext* private_context,
-                    RendererCommand* command) {
+                    RendererCommand* command, uint32_t* candidate_category) {
   command->set_visible(false);
+  *candidate_category = 0;
 
   if (private_context == nullptr) {
     return false;
@@ -122,10 +158,15 @@ bool FillVisibility(ITfUIElementMgr* ui_element_manager,
     switch (output.candidate_window().category()) {
       case commands::SUGGESTION:
         suggest_window_visible = show_suggest_window;
+        if (suggest_window_visible) *candidate_category = 1;
         break;
       case commands::CONVERSION:
+        candidate_window_visible = show_candidate_window;
+        if (candidate_window_visible) *candidate_category = 3;
+        break;
       case commands::PREDICTION:
         candidate_window_visible = show_candidate_window;
+        if (candidate_window_visible) *candidate_category = 2;
         break;
       default:
         // do nothing.
@@ -324,7 +365,8 @@ bool FillCharPosition(TipPrivateContext* private_context, ITfContext* context,
 
 void UpdateCommand(TipTextService* text_service, ITfContext* context,
                    TfEditCookie read_cookie, RendererCommand* command,
-                   bool* no_layout) {
+                   bool* no_layout,
+                   std::optional<TipCompositionState>* composition = nullptr) {
   command->Clear();
   command->set_type(RendererCommand::UPDATE);
 
@@ -344,7 +386,24 @@ void UpdateCommand(TipTextService* text_service, ITfContext* context,
   auto ui_element_manager =
       ComQuery<ITfUIElementMgr>(text_service->GetThreadManager());
   DCHECK(ui_element_manager);
-  FillVisibility(ui_element_manager.get(), private_context, command);
+  uint32_t candidate_category = 0;
+  FillVisibility(ui_element_manager.get(), private_context, command,
+                 &candidate_category);
+  // A TEST_SEND_KEY response in last_output() is not what the server made of
+  // the key, so no composition fields are made from it (ADR-267 D5, R4-M1).
+  if (composition != nullptr && private_context != nullptr &&
+      !private_context->last_output_is_test()) {
+    const commands::Output& output = private_context->last_output();
+    TipCompositionState state;
+    state.phase = GetPhase(output);
+    state.candidate_category = candidate_category;
+    if (state.phase != 0) {
+      state.preedit_utf16_len = GetPreeditUtf16Len(output);
+      state.preedit_cursor = output.preedit().cursor();
+    }
+    state.composition_key_seq = private_context->last_output_key_seq();
+    *composition = state;
+  }
   FillWindowHandle(context, app_info);
   FillCharPosition(private_context, context, read_cookie,
                    command->output().has_preedit(), app_info, no_layout);
@@ -450,12 +509,13 @@ void TipUiHandlerConventional::OnFocusChange(
   UpdateUiEditSessionImpl::BeginRequest(text_service, context.get());
 }
 
-bool TipUiHandlerConventional::Update(TipTextService* text_service,
-                                      ITfContext* context,
-                                      TfEditCookie read_cookie) {
+bool TipUiHandlerConventional::Update(
+    TipTextService* text_service, ITfContext* context, TfEditCookie read_cookie,
+    std::optional<TipCompositionState>* composition) {
   RendererCommand command;
   bool no_layout = false;
-  UpdateCommand(text_service, context, read_cookie, &command, &no_layout);
+  UpdateCommand(text_service, context, read_cookie, &command, &no_layout,
+                composition);
   if (!no_layout || !command.visible()) {
     Win32RendererClient::OnUpdated(command);
   }

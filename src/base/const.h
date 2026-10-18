@@ -35,8 +35,8 @@ namespace mozc {
 inline constexpr char kProductNameInEnglish[] = "Google Japanese Input";
 #define kProductPrefix "GoogleJapaneseInput"
 #else  // GOOGLE_JAPANESE_INPUT_BUILD
-inline constexpr char kProductNameInEnglish[] = "Mozc";
-#define kProductPrefix "Mozc"
+inline constexpr char kProductNameInEnglish[] = "Mozc Readable";
+#define kProductPrefix "MozcReadable"
 #endif  // GOOGLE_JAPANESE_INPUT_BUILD
 
 inline constexpr char kVersionRewriterVersionPrefix[] = kProductPrefix "-";
@@ -100,8 +100,8 @@ inline constexpr wchar_t kElevatedProcessDisabledKey[] =
 #else   // !GOOGLE_JAPANESE_INPUT_BUILD
 inline constexpr char kCompanyNameInEnglish[] = "Mozc Project";
 // Use Local prefix so that modules running under AppContainer can access.
-inline constexpr char kEventPathPrefix[] = "Local\\Mozc.event.";
-inline constexpr char kMutexPathPrefix[] = "Local\\Mozc.mutex.";
+inline constexpr char kEventPathPrefix[] = "Local\\MozcReadable.event.";
+inline constexpr char kMutexPathPrefix[] = "Local\\MozcReadable.mutex.";
 inline constexpr char kMozcServerName[] = "mozc_server.exe";
 inline constexpr char kIMEFile[] = "mozc_ja.ime";
 inline constexpr char kMozcTIP32[] = "mozc_tip32.dll";
@@ -111,22 +111,22 @@ inline constexpr char kMozcBroker[] = "mozc_broker.exe";
 inline constexpr char kMozcTool[] = "mozc_tool.exe";
 inline constexpr char kMozcRenderer[] = "mozc_renderer.exe";
 inline constexpr char kMozcCacheServiceExeName[] = "mozc_cache_service.exe";
-inline constexpr wchar_t kMozcCacheServiceName[] = L"MozcCacheService";
+inline constexpr wchar_t kMozcCacheServiceName[] = L"MozcReadableCacheService";
 inline constexpr wchar_t kMessageReceiverMessageName[] =
-    L"mozc.renderer.message";
-inline constexpr wchar_t kMessageReceiverClassName[] = L"mozc.renderer.window";
+    L"mozcreadable.renderer.message";
+inline constexpr wchar_t kMessageReceiverClassName[] = L"mozcreadable.renderer.window";
 inline constexpr wchar_t kCandidateWindowClassName[] = L"MozcCandidateWindow";
 inline constexpr wchar_t kCompositionWindowClassName[] =
     L"MozcCompositionWindow";
 inline constexpr wchar_t kIndicatorWindowClassName[] = L"MozcIndicatorWindow";
 inline constexpr wchar_t kInfolistWindowClassName[] = L"MozcInfolistWindow";
 inline constexpr wchar_t kIMEUIWndClassName[] = L"MozcUIWindow";
-inline constexpr char kIPCPrefix[] = "\\\\.\\pipe\\mozc.";
+inline constexpr char kIPCPrefix[] = "\\\\.\\pipe\\mozcreadable.";
 inline constexpr wchar_t kCandidateUIDescription[] = L"MozcCandidateUI";
 inline constexpr wchar_t kConfigurationDisplayname[] = L"Mozc Configuration";
-inline constexpr wchar_t kMozcRegKey[] = L"Software\\Mozc Project\\Mozc";
+inline constexpr wchar_t kMozcRegKey[] = L"Software\\Mozc Project\\MozcReadable";
 inline constexpr wchar_t kElevatedProcessDisabledKey[] =
-    L"Software\\Policies\\Mozc Project\\Mozc\\Preferences";
+    L"Software\\Policies\\Mozc Project\\MozcReadable\\Preferences";
 #endif  // GOOGLE_JAPANESE_INPUT_BUILD
 #elif defined(__APPLE__)
 inline constexpr char kMozcServerName[] = kProductPrefix "Converter.app";

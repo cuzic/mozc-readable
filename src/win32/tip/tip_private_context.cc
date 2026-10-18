@@ -31,6 +31,7 @@
 
 #include <msctf.h>
 
+#include <cstdint>
 #include <memory>
 
 #include "client/client.h"
@@ -59,6 +60,8 @@ class TipPrivateContext::InternalState {
   std::unique_ptr<client::ClientInterface> client_;
   SurrogatePairObserver surrogate_pair_observer_;
   commands::Output last_output_;
+  uint32_t last_output_key_seq_ = 0;
+  bool last_output_is_test_ = false;
   VirtualKey last_down_key_;
   InputBehavior input_behavior_;
   TipUiElementManager ui_element_manager_;
@@ -116,6 +119,22 @@ const Output& TipPrivateContext::last_output() const {
 
 Output* TipPrivateContext::mutable_last_output() {
   return &state_->last_output_;
+}
+
+uint32_t TipPrivateContext::last_output_key_seq() const {
+  return state_->last_output_key_seq_;
+}
+
+void TipPrivateContext::set_last_output_key_seq(uint32_t key_seq) {
+  state_->last_output_key_seq_ = key_seq;
+}
+
+bool TipPrivateContext::last_output_is_test() const {
+  return state_->last_output_is_test_;
+}
+
+void TipPrivateContext::set_last_output_is_test(bool is_test) {
+  state_->last_output_is_test_ = is_test;
 }
 
 const VirtualKey& TipPrivateContext::last_down_key() const {

@@ -40,6 +40,7 @@
 #include "win32/base/conversion_mode_util.h"
 #include "win32/base/indicator_visibility_tracker.h"
 #include "win32/base/keyboard.h"
+#include "win32/tip/tip_state_publisher.h"
 
 namespace mozc {
 namespace win32 {
@@ -57,12 +58,19 @@ void Dedup(std::vector<T>* container) {
 
 }  // namespace
 
-TipInputModeManagerImpl::StatePair TipInputModeManagerImpl::GetOverriddenState(
-    const StatePair& base_state, absl::Span<const InputScope> input_scopes) {
-  if (input_scopes.empty()) {
-    return base_state;
-  }
-  std::vector<ConversionMode> states;
+namespace {
+
+// scope_forced_mode is published as CompositionMode + 1 (ADR-267 D8).
+static_assert(commands::DIRECT == 0 && commands::HIRAGANA == 1 &&
+                  commands::FULL_KATAKANA == 2 && commands::HALF_ASCII == 3 &&
+                  commands::FULL_ASCII == 4 && commands::HALF_KATAKANA == 5,
+              "published CompositionMode values changed");
+
+// Maps each input scope to the composition mode it asks for and returns the
+// deduplicated list (empty when no scope asks for a mode).
+std::vector<TipInputModeManagerImpl::ConversionMode> CollectScopeModes(
+    absl::Span<const InputScope> input_scopes) {
+  std::vector<TipInputModeManagerImpl::ConversionMode> states;
   for (const auto& input_scope : input_scopes) {
     switch (input_scope) {
       // Some InputStope can be mapped to commands::Context::InputFieldType.
@@ -81,29 +89,41 @@ TipInputModeManagerImpl::StatePair TipInputModeManagerImpl::GetOverriddenState(
       case IS_TIME_HOUR:
       case IS_TIME_MINORSEC:
       case IS_ALPHANUMERIC_HALFWIDTH:
-        states.push_back(kDirect);
+        states.push_back(TipInputModeManagerImpl::kDirect);
         break;
       case IS_HIRAGANA:
-        states.push_back(kHiragana);
+        states.push_back(TipInputModeManagerImpl::kHiragana);
         break;
       case IS_NUMBER_FULLWIDTH:
       case IS_ALPHANUMERIC_FULLWIDTH:
-        states.push_back(kFullAscii);
+        states.push_back(TipInputModeManagerImpl::kFullAscii);
         break;
       case IS_KATAKANA_HALFWIDTH:
-        states.push_back(kHalfKatakana);
+        states.push_back(TipInputModeManagerImpl::kHalfKatakana);
         break;
       case IS_KATAKANA_FULLWIDTH:
-        states.push_back(kFullKatakana);
+        states.push_back(TipInputModeManagerImpl::kFullKatakana);
         break;
       default:
         break;
     }
   }
+  Dedup(&states);
+  return states;
+}
+
+}  // namespace
+
+TipInputModeManagerImpl::StatePair TipInputModeManagerImpl::GetOverriddenState(
+    const StatePair& base_state, absl::Span<const InputScope> input_scopes) {
+  if (input_scopes.empty()) {
+    return base_state;
+  }
+  const std::vector<ConversionMode> states =
+      CollectScopeModes(input_scopes);
   if (states.empty()) {
     return base_state;
   }
-  Dedup(&states);
   if (states.size() > 1) {
     // Multiple modes found.
     // TODO(yukawa): consider this case.
@@ -113,6 +133,18 @@ TipInputModeManagerImpl::StatePair TipInputModeManagerImpl::GetOverriddenState(
     return StatePair(false, base_state.conversion_mode);
   }
   return StatePair(true, states[0]);
+}
+
+uint32_t TipInputModeManagerImpl::GetScopeForcedMode(
+    absl::Span<const InputScope> input_scopes) {
+  // The same condition as the branch of GetOverriddenState that overrides:
+  // exactly one mode is asked for.
+  const std::vector<ConversionMode> states =
+      CollectScopeModes(input_scopes);
+  if (states.size() != 1) {
+    return 0;
+  }
+  return static_cast<uint32_t>(states[0]) + 1;
 }
 
 // For Mode Indicator.
@@ -166,6 +198,7 @@ TipInputModeManager::Action TipInputModeManager::OnMoveFocusedWindow() {
 TipInputModeManager::NotifyActionSet TipInputModeManager::OnReceiveCommand(
     bool mozc_open_close_mode, DWORD mozc_logical_mode,
     DWORD mozc_visible_mode) {
+  const PublishOnExit publish_on_exit(this);
   const StatePair prev_tsf_state = tsf_state_;
 
   tsf_state_.open_close = mozc_open_close_mode;
@@ -188,6 +221,7 @@ TipInputModeManager::NotifyActionSet TipInputModeManager::OnReceiveCommand(
 
 void TipInputModeManager::OnInitialize(bool system_open_close_mode,
                                        DWORD system_conversion_mode) {
+  const PublishOnExit publish_on_exit(this);
   mozc_state_.open_close = system_open_close_mode;
   tsf_state_.open_close = system_open_close_mode;
   if (use_global_mode_) {
@@ -203,6 +237,7 @@ void TipInputModeManager::OnInitialize(bool system_open_close_mode,
 TipInputModeManager::Action TipInputModeManager::OnSetFocus(
     bool system_open_close_mode, DWORD system_conversion_mode,
     absl::Span<const InputScope> input_scopes) {
+  const PublishOnExit publish_on_exit(this);
   const StatePair prev_effective = mozc_state_;
 
   indicator_visibility_tracker_.OnMoveFocusedWindow();
@@ -231,6 +266,7 @@ TipInputModeManager::Action TipInputModeManager::OnSetFocus(
 
 TipInputModeManager::Action TipInputModeManager::OnChangeOpenClose(
     bool new_open_close_mode) {
+  const PublishOnExit publish_on_exit(this);
   const bool prev_open = mozc_state_.open_close;  // effective on/off
 
   tsf_state_.open_close = new_open_close_mode;
@@ -244,6 +280,7 @@ TipInputModeManager::Action TipInputModeManager::OnChangeOpenClose(
 
 TipInputModeManager::Action TipInputModeManager::OnChangeConversionMode(
     DWORD new_conversion_mode) {
+  const PublishOnExit publish_on_exit(this);
   const StatePair prev_effective = mozc_state_;
 
   if (use_global_mode_) {
@@ -266,6 +303,7 @@ TipInputModeManager::Action TipInputModeManager::OnChangeConversionMode(
 
 TipInputModeManager::Action TipInputModeManager::OnChangeInputScope(
     absl::Span<const InputScope> input_scopes) {
+  const PublishOnExit publish_on_exit(this);
   const StatePair prev_effective = mozc_state_;
 
   std::vector<InputScope> new_input_scopes(input_scopes.begin(),
@@ -306,6 +344,16 @@ TipInputModeManager::GetTsfConversionMode() const {
 
 bool TipInputModeManager::IsIndicatorVisible() const {
   return indicator_visibility_tracker_.IsVisible();
+}
+
+TipInputModeManager::PublishOnExit::~PublishOnExit() { self->PublishState(); }
+
+void TipInputModeManager::PublishState() const {
+  TipStatePublisher::Publish(mozc_state_.open_close,
+                             static_cast<int>(mozc_state_.conversion_mode),
+                             tsf_state_.open_close,
+                             static_cast<int>(tsf_state_.conversion_mode),
+                             GetScopeForcedMode(input_scope_));
 }
 
 }  // namespace tsf

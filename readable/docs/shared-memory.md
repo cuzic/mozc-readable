@@ -1,0 +1,249 @@
+# mozc-readable 共有メモリ仕様(外部の読み手向け)
+
+[mozc-readable](https://github.com/cuzic/mozc-readable) の TIP(Mozc の TSF 入力方式)が書き出す、IME の開閉・入力モードの共有メモリの仕様です。awase を含め、外部のプロセスが「いまの IME の状態」を読むための取り決めです。方針と経緯は [ADR-265](https://github.com/cuzic/awase/blob/develop/docs/adr/265-mozc-readable-integration.md)(awase リポジトリ) を参照してください。
+
+- 本書の「ADR-nnn」は、awase リポジトリの `docs/adr/` の文書を指します。
+- **版**: **version 3**(80 バイト。組成の状態を追加。ADR-267)を実装中です(`feat/composition-state-v3`、CI 確認前。2 章の version 3 の項目は**実測がまだありません**)。version 2 の最初の 48 バイトは変わりません。**version 2** が `readable` ブランチに入っています(コミット `aa228f6`、2026-10-18)。**CI で確認済みです**(通常の窓・Chrome・Notepad・AppContainer の窓から、別プロセスが値を読めること。IME を切り替えたあとの `active=0` も実測済み。5-1)。**リリース済みのビルドはまだありません**。version 1(`reserved` のまま、`magic` が先に書かれる)の読み方は、古いビルド向けに 6 章に残します。
+- 出典: mozc-readable の `src/win32/tip/tip_state_publisher.{h,cc}`(`readable` ブランチ)。食い違いがあれば実装が正です。
+- 効く IME は mozc-readable だけです(公式の Mozc・Google 日本語入力・Microsoft IME には書き出し側が無い)。
+
+## 想定読者と使い道: 自作キーボード(QMK など)
+
+主な想定読者は、**自分でキーボードのファームウェアを書く人**(QMK など)です。IME の状態をキーボード側へ伝えると、たとえば次ができます。
+
+- OLED に「あ / A」を出す。LED の色で IME の開閉を示す。
+- IME が開いているときだけ、日本語入力用のレイヤーへ自動で切り替える(閉じたら戻す)。
+- 「いま日本語か英数か分からず、打ってから気づく」を減らす。
+
+Windows の標準の API では、他のアプリの IME の状態を外から確実に読めません(アプリごとに答えが違い、嘘をつくこともあります)。mozc-readable は、IME 自身がその値を共有メモリへ出すので、ここから読めば推測が要りません。
+
+### 全体像
+
+```text
+[mozc-readable の TIP] --共有メモリ--> [PC 側の小さなブリッジ] --USB(HID)--> [キーボードのファーム]
+   IME の中の値を書く                   読んで、変わったら送る               受け取って OLED/レイヤーに反映
+```
+
+キーボードのファームは、PC の IME の中を直接は見られないので、**PC 側にブリッジ(常駐する小さなプログラム)が要ります**。ブリッジの読み取り部分の最小例が [`examples/read_ime_state.py`](examples/read_ime_state.py) です(標準ライブラリだけ・約 100 行)。表示する代わりに、変わったときに HID でキーボードへ送れば完成です。
+
+### キーボードへ送る(スケッチ。未検証)
+
+QMK なら、PC からキーボードへ小さなデータを送る **Raw HID** が使えます(`rules.mk` の `RAW_ENABLE = yes`)。既定では usage page `0xFF60`・usage `0x61`、1 回 32 バイトです(自分のファームの設定で確認してください)。ブリッジ側は `hidapi` などで、たとえば次の 3 バイトを送ります。
+
+| バイト | 内容 |
+| --- | --- |
+| 0 | 0(Raw HID のレポート ID。環境によっては要らない) |
+| 1 | IME の開閉(0=閉、1=開、2=不明) |
+| 2 | 入力モード(0〜5、不明は 255。値は 2 章の表) |
+
+ファーム側(QMK)は `raw_hid_receive()` で受け取って、OLED の描画やレイヤー切り替えに使います。
+
+```c
+static uint8_t ime_open = 2, ime_mode = 255;   // 2=不明、255=不明
+
+void raw_hid_receive(uint8_t *data, uint8_t length) {
+    ime_open = data[1];
+    ime_mode = data[2];
+    // ここでレイヤーを切り替える・OLED を更新する、など
+}
+```
+
+ZMK など Raw HID の仕組みが標準で無いファームについては、筆者は確認していません。PC → キーボードの経路は各自で用意してください(この仕様書の範囲外です)。
+
+### 使う前に知っておくこと
+
+- **Windows 専用**で、**mozc-readable を入力方式にしている窓だけ**で値が出ます。公式の Mozc・Google 日本語入力・Microsoft IME には書き出し側がありません。読めない窓は **「不明」** として扱い、キーボード側で「閉」と決め打ちしないでください(誤表示になります)。
+- **version 2 では `active` で「いま mozc-readable が使われているか」が分かります**(5-1)。スレッドを TIP の無いレイアウトへ切り替えると `active=0` になることは、CI で実測しています(5-1。ほかの切り替え方法は未検証)。version 1 のブロックは、IME を別の IME に切り替えても最後の状態が残るので、読み手は捨ててください。
+- 反映の遅さは、CI の実測で、キーを押してから共有メモリに反映されるまで約 61 ms でした。ブリッジの送信と、キーボード側の描画は別にかかります。
+- AppContainer で動くアプリ(UWP など)の窓は、`OpenFileMappingW` では読めず、`NtOpenSection` で名前空間のパスを指定する必要があります(4-4 章)。同梱の例は、この方法に対応していません(通常の窓だけ読めます)。
+- インストーラー(MSI)は署名がなく、SmartScreen の警告が出ます。配布は最初の Release が出てからです(ADR-265)。
+
+## 1. オブジェクト名
+
+名前はすべて、対話ユーザーセッションの `Local\` 名前空間にあります。
+
+| 種別 | 名前 | 中身 |
+| --- | --- | --- |
+| 共有メモリ(ページファイル裏付けのファイルマッピング) | `Local\mozc-readable-ime-<TID>` | 下記の `TipSharedState`(version 3 は 80 バイト、version 2 は 48 バイト。読み手の map サイズは 4-1)。`<TID>` は TIP が動いているスレッドの ID(10 進数) |
+| 通知イベント(manual-reset) | `Local\mozc-readable-ime-changed` | 状態が変わるたびに pulse(`SetEvent` の直後に `ResetEvent`) |
+
+- マッピングは **スレッドごと**です(TSF の状態はスレッドごとに独立。ADR-191)。読み手は、読みたい窓の**キーボードフォーカスを持つスレッド**の ID で開きます(前面窓のスレッドとは限りません。UWP は前面が `ApplicationFrameHost` で、入力は別プロセスの `CoreWindow` のスレッドです)。
+- マッピングの DACL は、LocalSystem・Administrators・現在のユーザーに全権、`ALL APPLICATION PACKAGES` に読み取りです(`WinSandbox::kSharableFileForRead`)。
+- **AppContainer 内のプロセス(UWP など)が作る `Local\` は、`\Sessions\<n>\AppContainerNamedObjects\<AppContainer SID>\` に振り分けられます**。そのため、`OpenFileMappingW("Local\\mozc-readable-ime-<TID>")` では届きません。**`NtOpenSection` で、その名前空間の完全なパスを指定すれば外から読めます**(CI で実測済み。4-4 章)。通知イベント(`...-changed`)も同じ名前空間に振り分けられる見込みですが、未確認です。
+
+## 2. `TipSharedState`(version 3、80 バイト)
+
+リトルエンディアン。構造体の配置は外部インターフェースの一部で、**追記のみ・互換を壊すときは `version` を上げる**取り決めです。
+
+| オフセット | 型 | 名前 | 意味 |
+| --- | --- | --- | --- |
+| 0 | u32 | `magic` | `0x5A52444D`(メモリ上のバイト列は `4D 44 52 5A`、ASCII の `MDRZ`) |
+| 4 | u32 | `version` | 現行は `3`。旧サイズの共有メモリが残っているときの書き出し側は `2`(3-2)。version 1 は古いビルド(6 章) |
+| 8 | u32 | `seq` | seqlock の番号。**書き込み中は奇数** |
+| 12 | u32 | `effective_open` | 0/1。Mozc のセッションから見た IME の開閉(入力スコープによる上書き後) |
+| 16 | u32 | `effective_mode` | `commands::CompositionMode`(Mozc のセッション) |
+| 20 | u32 | `tsf_open` | 0/1。TSF から見える開閉(compartment 相当) |
+| 24 | u32 | `tsf_mode` | `commands::CompositionMode`(TSF) |
+| 28 | u32 | `thread_id` | 書き出したスレッドの ID(マッピング名の `<TID>` と同じ) |
+| 32 | u32 | `process_id` | 書き出したプロセスの ID |
+| 36 | u32 | `active` | 1 のとき、この TIP がそのスレッドで有効(Activate から Deactivate まで)。version 1 では `reserved`(0) |
+| 40 | u64 | `update_tick_ms` | 最後に**変化を書いた**時の `GetTickCount64()` |
+| 48 | u32 | `phase` | 0=組成なし、1=組成中(読みを入力中)、2=変換中(未確定文字列に注目文節〈`annotation == HIGHLIGHT`〉がある) |
+| 52 | u32 | `candidate_category` | 0=候補の窓なし、1=`SUGGESTION`、2=`PREDICTION`、3=`CONVERSION`。TIP が実際に表示する対象かの判定(`TipUiElementManager::IsVisible`)を通した結果。UI-less(アプリが候補窓を描く)のときは 0。**値は Mozc の `commands::Category` の数値ではない**(Mozc は `CONVERSION=0`, `PREDICTION=1`, `SUGGESTION=2`)。この表のとおりに読む |
+| 56 | u32 | `preedit_utf16_len` | 未確定文字列の **UTF-16 の長さ**(TIP が文書へ書く長さと同じ単位)。`phase=0` なら 0 |
+| 60 | u32 | `preedit_cursor` | 未確定文字列内のカーソル位置。**UTF-32 のコードポイント単位**(Mozc の `preedit().cursor()` の単位。直上の項目と単位が違う) |
+| 64 | u32 | `key_seq` | TIP が見たキーダウンの通番(下記「`key_seq`」)。ラップする |
+| 68 | u32 | `scope_forced_mode` | 入力スコープが 1 つのモードに決めているときの「`CompositionMode` の値 + 1」。0=指定なし。**1(DIRECT)は「IME を閉じる」指定で、`effective_mode` は変わらない**。値は 0〜6 |
+| 72 | u32 | `server_ready` | 1=この TIP が Mozc サーバーから応答を受け取れている。0=まだ応答を受けていない、または直近の呼び出しが失敗した。**仮説の段階で、cold の指標かは未確認**(下記) |
+| 76 | u32 | `composition_key_seq` | `phase`・`candidate_category`・`preedit_*` の元になった出力を**生んだ打鍵**の `key_seq`(下記「鮮度」) |
+
+- 全体は 80 バイト(`update_tick_ms`〈u64〉がオフセット 40 で 8 の倍数、追記の u32×8 が 48〜79。暗黙の詰め物なし)。今後の追記は 80 から始め、u64 は 8 の倍数のオフセットに置く。参考: Python は `struct.Struct("<10IQ8I")`(= 80)。
+- 48 バイトまでの意味は version 2 と同じです。
+
+### 入力モードの値(`CompositionMode`、Mozc の `protocol/commands.proto`)
+
+| 値 | 名前 | 意味 |
+| --- | --- | --- |
+| 0 | `DIRECT` | 直接入力(IME が閉じているときの値) |
+| 1 | `HIRAGANA` | ひらがな |
+| 2 | `FULL_KATAKANA` | 全角カタカナ |
+| 3 | `HALF_ASCII` | 半角英数 |
+| 4 | `FULL_ASCII` | 全角英数 |
+| 5 | `HALF_KATAKANA` | 半角カタカナ |
+
+### version 3 の項目の読み方
+
+- **`active == 0` のときは、他の項目をすべて無視してください**(必須)。IME を切り替えたあとも古い値が残りうるためです。書き出し側は `Deactivate` で `phase`・`candidate_category`・`preedit_utf16_len`・`preedit_cursor`・`scope_forced_mode`・`composition_key_seq` を 0 に落とします(`key_seq` は残す)。
+- **`key_seq`**: `TipKeyeventHandler::OnTestKeyDown` と `TipTextService::OnPreservedKey` の**関数の入口**(中の早期 return より前)で +1 します。`OnKeyDown` では数えません(TSF は `OnTestKeyDown` が eaten=FALSE のキーに `OnKeyDown` を呼ばないため。数えると食べたキーが 2 回になる)。IME が閉じていて TIP が食べないキーでも進みます。**打鍵のたびに毎回書かれます**(値が変わらないキーでも進む)が、通知イベントは pulse しません(3-1)。送ったキーの数と完全には一致しません: ①アプリが同じキーで `TestKeyDown` を複数回呼ぶと重複して数える、②`TestKeyDown` なしで `KeyDown` を直接呼ぶと数えない、③IME 自身が送る BackSpace(`VKBackBasedDeleter`)が入りうる。これらは**実測が済んでいません**。目安として使ってください。
+- **鮮度**: `key_seq` は編集セッションの外で進み、組成の項目は編集セッションの末尾で書かれるので、`key_seq` だけでは組成の項目が反映済みか分かりません。`composition_key_seq` は、組成の項目の元になった出力を生んだ打鍵の番号です(公開した時点の `key_seq` ではない。非同期の編集セッションや、打鍵と無関係の更新でずれないため)。打鍵に由来しない出力(言語バー、アプリによる組成の打ち切りなど)は直前の値を引き継ぎます。読み手は、**`(int32_t)(composition_key_seq - 自分が送った打鍵の番号) >= 0` のときだけ組成の項目(`phase`・`candidate_category`・`preedit_*`)を採ってください**。u32 の差を符号付きにする書き方で、ラップを越えても正しく比較できます。「自分が送った打鍵の番号」は、読み始めた時点の `key_seq` に送った数を足して作ります(上記のずれがあるため目安)。
+- 値は TIP が編集セッションの中で公開した時点の状態です。Word の回避策などで編集セッションが非同期になると、受け取りと公開の間にアプリがロックを与えるまでの遅れが入ります。
+- **`scope_forced_mode`**: 入力欄(パスワード欄など)が入力モードを指定していることの IME 自身の申告です。打鍵では消えません。1(DIRECT)は IME を閉じる指定で、`effective_mode` はそのまま(`effective_open` が 0 になる)。「いま食い違っている」は、読み手が `effective_*` と `tsf_*` から導いてください。
+- **`server_ready`**: 実測で採否を決める項目です(ADR-267 D10)。「1 の間は最初のキーが落ちず、0 の間は落ちる」という差が出なければ、cold の指標ではないとして項目を外します。実測前は、表示と記録のみに使ってください。
+- **組成の状態はスレッドの `ITfContext` ごとの値**ですが、共有メモリはスレッドごとに 1 ブロックです。同じスレッドの別の context へフォーカスが移っても、キーを押すまで更新されないことがあります(CI で確認中)。
+
+### どちらの `*_open` / `*_mode` を使うか
+
+- `effective_*` は、入力スコープ(パスワード欄など)による上書きの**後**の値です。
+- `tsf_*` は、TSF の compartment 相当の値です。awase の belief は compartment 相当なので、awase は `tsf_*` を既定にする予定です(awase の ADR-265 D3)。両者が食い違うとき(パスワード欄など)の扱いは、実測してから決めます。
+
+## 3. 書き込み側の動作(version 3)
+
+- マッピングは、そのスレッドで最初に書き出しが要るときに作られます。**`magic` は最後に(メモリバリアの後で)書きます**。したがって `seq == 0` は「未公開」で、`magic` が正しくても中身はまだ有効ではありません。
+### 3-1. 書く判定と pulse する判定は別
+
+- **書くかどうか**は、公開する全項目(`key_seq` を含む)の比較です。どれかが変わったときだけ書き、変化が無ければ `seq` も進めません(フォーカス移動やクリックのたびに呼ばれるが、ほとんどは無変更のため)。
+- **通知イベントを pulse するかどうか**は、状態の項目(`active`・`effective_*`・`tsf_*`・`phase`・`candidate_category`・`scope_forced_mode`・`server_ready`)の変化だけです。`preedit_utf16_len`・`preedit_cursor`・`key_seq`・`composition_key_seq` だけが変わったときは書きますが pulse しません(打鍵のたびに起こされるのを避けるため)。これらは、状態の変化で起きたときに読み直すか、自分の打鍵の後に読んでください。最初の書き込みは常に pulse します。
+- したがって **`update_tick_ms` は「最後に書いた時刻」であり、生存の印ではありません**。
+- 書き込みの手順: `seq` を +1(奇数)→ 項目と `update_tick_ms` を書く → `seq` を +1(偶数)。どちらの +1 も全バリア(`InterlockedIncrement`)。
+- 組成の項目(`phase`・`candidate_category`・`preedit_*`・`composition_key_seq`)は、TIP が UI を更新する地点(`TipUiHandler::Update`、編集セッションの末尾)で書きます。`key_seq` は打鍵の入口で、`scope_forced_mode` は入力モードの更新(フォーカス移動・入力スコープの変化)で書きます。
+
+### 3-2. 旧サイズの共有メモリが残っているとき
+
+長寿命のプロセスは旧 DLL のまま 48 バイトのセクションを作り続けるので、新旧が同時に存在します。同名のセクションが旧サイズで残っていて 80 バイトで map できないとき、書き出し側は **`version = 2` として最初の 48 バイトだけ**を書き(それ以降には触れない)、version 3 の項目は出しません。
+- `active` は、`TipTextService::ActivateEx` の先頭で 1、`Deactivate()` の(アンロード済みかの検査の直後)で 0 になります。
+- スレッドが終わるか DLL が外れるとビューとハンドルが閉じられ、**最後のハンドルが閉じるとマッピングは消えます**。
+
+## 4. 読み手の規約
+
+### 4-1. 読み方(seqlock)
+
+```text
+open  = OpenFileMappingW(FILE_MAP_READ, FALSE, "Local\mozc-readable-ime-" + tid)
+view  = MapViewOfFile(open, FILE_MAP_READ, 0, 0, 48)   # まず 48 で map し、version を読む
+if view.version >= 3: map し直す(80)               # 80 固定で map すると version 2 のブロックが読めない
+loop (数回まで):
+    seq1 = acquire_load(view.seq)
+    if seq1 is odd: retry                  # 書き込み中
+    copy = volatile_read(view[0..size])     # size = 48(version 2)/ 80(version 3)。中身は 1 回だけ読む
+    fence(acquire)
+    seq2 = load(view.seq)
+    if seq1 == seq2: accept copy; break     # 一致したときだけ採る
+    retry
+UnmapViewOfFile; CloseHandle                # 読むたびに閉じる(ハンドルを持ち続けない)
+```
+
+- **ハンドルを持ち続けない**: 読むたびに Open → Map → 読む → Unmap → Close します。持ち続けると、書き出し側のプロセスが終わった後も古いブロックが残ります。
+- **map サイズ**: 「サイズ 0(セクション全体)で map する」か、「48 で map して `version` を読み、`version >= 3` のときだけ 80 で map し直す」のどちらかにしてください。80 固定で map すると、旧サイズ(48 バイト)のブロックの開閉・モードまで読めなくなります。`version` が 3 でも、書き出し側が旧サイズのセクションを見つけたときは 48 バイトまで(`version = 2`)です(3-2)。
+- Rust では `read_volatile` と `fence(Ordering::Acquire)` が要ります。
+
+### 4-2. 受け入れ条件(すべて満たしたときだけ「読めた」とする)
+
+1. `magic == 0x5A52444D`。
+2. `version >= 2`(**version 1 のブロックは捨てる**。version 1 には `active` が無く、IME を切り替えた後も最後の状態が残るため。下の 5-1)。
+3. `seq` が偶数で、seqlock の読みが一致した。`seq == 0` は「未公開」(作った直後で、まだ最初の書き込みが無い)なので捨てる。
+4. `process_id` が、対象の窓のプロセスの PID と一致する(**スレッド ID は再利用される**ので、別プロセスの新しいスレッドが同じ番号になると古いブロックを読んでしまう)。
+5. `active == 1`。0 のときは、その窓では mozc-readable が使われていないので「不明」として扱う(**version 3 の項目も、すべて無視する**)。
+
+### 4-3. 通知イベント
+
+- `Local\mozc-readable-ime-changed` は **pulse** です。待っている間に別の処理で忙しかった読み手は取りこぼします。**起きるたびに、読みたいスレッドのブロックを読み直してください**(イベントは「読み直す合図」にだけ使う)。
+- manual-reset のイベントを `SetEvent` の直後に `ResetEvent` するので、待っている全員が起きます。
+
+### 4-4. AppContainer(UWP など)の窓を読む
+
+対象のプロセスが AppContainer で動いているとき、共有メモリは次の名前で作られます(名前に `Local\` は付かない)。
+
+```text
+\Sessions\<セッション番号>\AppContainerNamedObjects\<AppContainer SID の文字列>\mozc-readable-ime-<TID>
+```
+
+読み手は `NtOpenSection`(`SECTION_MAP_READ`)でこのパスを開き、`NtMapViewOfSection` か、得たハンドルを `MapViewOfFile` に渡して読みます。以降の seqlock の手順・受け入れ条件は同じです。
+
+- **実測**: GitHub Actions(windows-2025)で、AppContainer 内で動かした窓(`ReadableCiHost`)のブロックを、AppContainer の外のプロセスから `NtOpenSection(\Sessions\2\AppContainerNamedObjects\S-1-15-2-…\mozc-readable-ime-1908)` で開き(NTSTATUS `0x00000000`)、開閉・モードが入力のたびに期待どおりに変わることを確認しました(mozc-readable の `readable` ブランチ `dbba777`、run `39097062197`)。
+- **SID の取り方(実測済み)**: 読み手は、対象の窓のプロセスの pid から、`OpenProcess`(`PROCESS_QUERY_LIMITED_INFORMATION` = 0x1000)→ `OpenProcessToken`(`TOKEN_QUERY` = 8)→ `GetTokenInformation`(`TokenIsAppContainer` = 29 で AppContainer かを確かめ、`TokenAppContainerSid` = 31 で SID を取る)→ `ConvertSidToStringSidW` で SID の文字列を得ます。セッション番号は `ProcessIdToSessionId` です(参照実装: mozc-readable の `readable/ci/drive_foreground.py` の `appcontainer_sid()` と `open_ac_section()`)。上の run では、パスの SID が、AppContainer を起動した側が出した SID と一致しました。
+- **未確認**: 昇格していない通常ユーザーのトークンで、同じ手順が通るか(CI のランナーは管理者で、昇格済みとみなせる)。通知イベント(`...-changed`)が同じ名前空間にあるかどうかも未確認です。
+- 取れなかったとき(権限・SID が取れない)は、その窓を「不明」として扱ってください。
+
+### 4-5. 古い値への備え
+
+- `update_tick_ms` の新しさでブロックの生死を判定しないでください(変化が無ければ書かないため、長く変わらない窓が「古い」と誤判定される)。生存は `process_id` の照合と、`active` で見ます。
+
+## 5. 既知の限界
+
+### 5-1. IME を切り替えたときの `active`(CI で実測、条件つき)
+
+version 1 の書き出し側は、TIP の無効化(Win+Space で同じスレッドの IME を MS-IME などへ切り替える)で何も書かず、マッピングはスレッドが生きている限り最後の値(例: 開・ひらがな)のまま残る見込みでした(ソースの読み取り、未実測)。
+
+version 2 は、`active`(Activate で 1、Deactivate で 0)でこれを区別します。CI は、`active=1` を Hard、スレッドを英語レイアウトへ切り替えたあとの `active=0` を Soft で確認します。
+
+**実測**(GitHub Actions、windows-2025。mozc-readable の run 39098693442 以降): `ActivateKeyboardLayout`(英語 `00000409`)で、そのスレッドを TIP の無いレイアウトへ切り替えると、8 秒以内に `active=1` → `active=0` になりました。
+
+**条件と未検証**: 「アプリウィンドウごとに異なる入力方式を設定する」がオフ(既定)のとき、この切り替えは**セッション全体に効き**、あとに起動するプロセスにも TIP が付かなくなります(CI の検証はこのため、切り替えを専用のジョブの最後に置いています)。Win+Space など、ほかの切り替え方法のときと、その設定がオンのときの挙動は測っていません。
+
+### 5-2. 最初の書き込みの前
+
+`magic` は最後に書かれるので、マッピングができた直後で `magic` がまだ 0 のブロックは、受け入れ条件 1 で捨てられます。version 1 では `magic` が先に書かれ、中身が 0(閉・`DIRECT`)の状態を「閉・直接入力」として読んでしまう余地がありました。受け入れ条件 3(`seq == 0` は捨てる)は、どちらの版でも守ってください。
+
+### 5-3. 信頼境界は同一ユーザー
+
+同じセッションのどのプロセスでも、TIP より先に同名のマッピングを作れば値を偽れます(TIP は既存のものを開いて書きます)。同一ユーザーの攻撃者は他の手段もあるため、脅威としては許容します。
+
+### 5-4. 取れる情報
+
+- 開閉と 6 つの入力モードに加え、version 3 で組成の段階(`phase`)・候補の種類(`candidate_category`)・未確定文字列の長さとカーソル位置を出します。**未確定文字列の中身・候補の数・選択位置は出しません**(パスワード欄の組成も 0 にはしません。同一ユーザーのプロセスは信頼境界の内側として扱う。ADR-267 D3)。
+- **新しいプロセスの最初の打鍵が落ちる**ように見えた件は、mozc-readable の不具合ではありませんでした。CI で、コンソールの python プロセスを並行して起動すると、その**コンソール窓が前面を奪い、キーが別の窓に行って**いました(公式の無改造 Mozc でも同じ。mozc-readable の run 39104699356: 単独で起動した新しいプロセスでは、公式 12/12・mozc-readable 12/12、窓を出して 0.5 秒後でも最初の ON キーが効く。並行起動したときの失敗はすべて、キーを送る瞬間に別の窓が前面にあった)。検証スクリプトで新しいコンソール窓を作らないようにして解消しました。
+- **Chrome だけ**、新しいページで最初の IME ON キーが 1 回目は効かない現象が、CI で繰り返し出ています。確認できた run(1 回目は無効で、8 秒後の再送で有効: 39091429374・39105209924・39105589162。3 回〈約 24 秒〉とも無効: 39104994181・39105396367)。前面は Chrome のままで(キーが別の窓に行ったわけではない)、コンソール窓の対策(`-NoNewWindow`)の前後で変わりません。Chrome の TSF が最初の IME ON のときに文脈を初期化する間はキーが効かない、という awase の既知の挙動(BUG-002)と整合しますが、同じ原因とは確認していません。また、公式の Mozc を Chrome で試してはいないので、mozc-readable に固有かどうかも未確認です。Chrome の窓を読む側は、最初の ON が少し遅れて見えうる、と考えてください。
+
+## 6. version 1 との違い(古いビルドを読む場合)
+
+version 2 で変わったのは次の 3 点です(`readable` の `aa228f6`)。
+
+- `reserved`(オフセット 36)が `active` になった。
+- 変化の判定が `active` を含む全体の比較になった。
+- `magic` を最後に書くようになった(`seq == 0` が確実に「未公開」を表す)。
+
+version 1 のブロックを読む場合は、`active` が無いので「いま使われているか」を判別できません。このため、**version 1 は捨ててください**(受け入れ条件 2)。
+
+## 6-2. version 2 から version 3 へ
+
+- 追記のみです(オフセット 48〜79 に u32×8)。0〜47 の意味は変わりません。`version` は 3、サイズは 80 です。
+- version 2 の読み手は、48 バイトで map して読み続ければ動きます(`version` が 3 でも)。
+
+## 7. 変更履歴
+
+| 日付 | 内容 |
+| --- | --- |
+| 2026-10-18 | 初版。version 1(現行実装)と version 2(予定)を記述。自作キーボード向けの使い道と最小例を追加 |
+| 2026-10-18 | version 2 が `readable` の `aa228f6` に入ったため、「予定」を実装済み(CI 確認中・リリース前)に改める。`reserved` は `active` に |
+| 2026-10-18 | 5-1: `active=0` を CI で実測(run 39098693442 以降)した結果と条件を書く。5-4: 「最初の打鍵が落ちる」の原因を、検証スクリプトのコンソール窓が前面を奪っていたこと(run 39104699356)に直し、Chrome だけに残る現象を別に書く |
+| 2026-10-18 | version 3(80 バイト、ADR-267)を追加: `phase`・`candidate_category`・`preedit_utf16_len`・`preedit_cursor`・`key_seq`・`scope_forced_mode`・`server_ready`・`composition_key_seq`。書く判定と pulse の判定を分離。読み手の map サイズの規約を追加。実装中・CI 未確認 |

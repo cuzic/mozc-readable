@@ -51,6 +51,7 @@
 #include "win32/tip/tip_edit_session.h"
 #include "win32/tip/tip_input_mode_manager.h"
 #include "win32/tip/tip_private_context.h"
+#include "win32/tip/tip_state_publisher.h"
 #include "win32/tip/tip_status.h"
 #include "win32/tip/tip_surrounding_text.h"
 #include "win32/tip/tip_text_service.h"
@@ -258,6 +259,13 @@ HRESULT OnTestKey(TipTextService* text_service, ITfContext* context,
       vk, key_info.GetScanCode(), is_key_down, keyboard_status, behavior,
       input_state, mozc_context, private_context->GetClient(), keyboard.get(),
       &next_state, &temporal_output);
+  // mozc-readable (ADR-267 D10): a key that was sent to the server tells
+  // whether the server answered. The client returns false when the IPC call
+  // fails (including a server that is still starting), and the output then has
+  // no `consumed`. Hypothesis: this is the "cold" state; the CI decides.
+  if (result.should_be_sent_to_server) {
+    TipStatePublisher::SetServerReady(temporal_output.has_consumed());
+  }
   if (!result.succeeded) {
     *eaten = FALSE;
     return S_OK;
@@ -267,6 +275,10 @@ HRESULT OnTestKey(TipTextService* text_service, ITfContext* context,
 
   if (result.should_be_sent_to_server && temporal_output.has_consumed()) {
     *private_context->mutable_last_output() = temporal_output;
+    // This is a TEST_SEND_KEY response, not what the server made of the key:
+    // it carries no key number and no composition fields are made from it
+    // until the key itself is processed (ADR-267 D5, R4-M1).
+    private_context->set_last_output_is_test(true);
   }
   const TipInputModeManager::Action action =
       text_service->GetThreadContext()->GetInputModeManager()->OnTestKey(
@@ -434,6 +446,10 @@ HRESULT OnKey(TipTextService* text_service, ITfContext* context,
         ime_state, mozc_context, private_context->GetClient(), keyboard.get(),
         &next_state, &temporal_output);
 
+    // See OnTest: whether the server answered (ADR-267 D10).
+    if (result.should_be_sent_to_server) {
+      TipStatePublisher::SetServerReady(temporal_output.has_consumed());
+    }
     if (!result.succeeded) {
       // no message generated.
       *eaten = FALSE;
@@ -460,7 +476,10 @@ HRESULT OnKey(TipTextService* text_service, ITfContext* context,
 
   // TSF spec guarantees that key event handling can always be a synchronous
   // operation.
-  TipEditSession::OnOutputReceivedSync(text_service, context, temporal_output);
+  // The output belongs to the key-down counted in OnTestKeyDown (or
+  // OnPreservedKey), whose number is the current key_seq (ADR-267 D5).
+  TipEditSession::OnOutputReceivedSync(text_service, context, temporal_output,
+                                       TipStatePublisher::CurrentKeySeq());
   *eaten = !ignore_this_keyevent ? TRUE : FALSE;
 
   return S_OK;
@@ -474,6 +493,10 @@ constexpr bool kKeyUp = false;
 HRESULT TipKeyeventHandler::OnTestKeyDown(TipTextService* text_service,
                                           ITfContext* context, WPARAM wparam,
                                           LPARAM lparam, BOOL* eaten) {
+  // mozc-readable (ADR-267 D1): count at the entrance, before any early return
+  // inside OnTest. OnKeyDown is not counted: TSF does not call it for a key
+  // OnTestKeyDown did not eat, and counting both would count an eaten key twice.
+  TipStatePublisher::CountKeyDown();
   return OnTestKey(text_service, context, kKeyDown, wparam, lparam, eaten);
 }
 

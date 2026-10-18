@@ -72,6 +72,7 @@
 #include "win32/tip/tip_private_context.h"
 #include "win32/tip/tip_reconvert_function.h"
 #include "win32/tip/tip_resource.h"
+#include "win32/tip/tip_state_publisher.h"
 #include "win32/tip/tip_status.h"
 #include "win32/tip/tip_thread_context.h"
 #include "win32/tip/tip_ui_handler.h"
@@ -451,6 +452,9 @@ class TipTextServiceImpl
       return S_OK;
     }
 
+    // mozc-readable: from here on the thread no longer has a live Mozc TIP.
+    TipStatePublisher::SetActive(false);
+
     // Stop advising the ITfThreadFocusSink events.
     UninitThreadFocusSink();
 
@@ -503,6 +507,8 @@ class TipTextServiceImpl
     }
     thread_context_ = std::make_unique<TipThreadContext>();
     StorePointerForCurrentThread(this);
+    // mozc-readable: tell readers of the shared state that this TIP is live on the thread.
+    TipStatePublisher::SetActive(true);
 
     HRESULT result = E_UNEXPECTED;
 
@@ -823,6 +829,9 @@ class TipTextServiceImpl
       eaten = &dummy_eaten;
     }
     *eaten = FALSE;
+    // mozc-readable (ADR-267 D1): a preserved key reaches OnKeyDown without an
+    // OnTestKeyDown, so it is counted here, at the entrance.
+    TipStatePublisher::CountKeyDown();
     const auto it = preserved_key_map_.find(guid);
     if (it == preserved_key_map_.end()) {
       return result;

@@ -33,6 +33,7 @@
 #include <msctf.h>
 
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <string_view>
 
@@ -54,14 +55,21 @@ class TipEditSession {
   // that sync edit session is guaranteed to be capable only in key event
   // handler and ITfFnReconversion::QueryRange. In other cases, you should use
   // OnOutputReceivedAsync instead.
-  static bool OnOutputReceivedSync(TipTextService* text_service,
-                                   ITfContext* context,
-                                   commands::Output new_output);
+  //
+  // `key_seq` (mozc-readable, ADR-267 D5) is the number of the key-down that
+  // produced `new_output`. Only the paths that handle a key pass it; others
+  // (reconversion from the application) leave it empty and keep the previous
+  // number.
+  static bool OnOutputReceivedSync(
+      TipTextService* text_service, ITfContext* context,
+      commands::Output new_output,
+      std::optional<uint32_t> key_seq = std::nullopt);
 
   // Begins an async edit session with |new_output| to update the context.
-  static bool OnOutputReceivedAsync(TipTextService* text_service,
-                                    ITfContext* context,
-                                    commands::Output new_output);
+  static bool OnOutputReceivedAsync(
+      TipTextService* text_service, ITfContext* context,
+      commands::Output new_output,
+      std::optional<uint32_t> key_seq = std::nullopt);
 
   // Begins a sync edit session to invoke reconversion that is initialized by
   // the application.
