@@ -6,6 +6,7 @@ is written to the file given as argv[1]; reader.py (a separate process) reads it
 """
 import ctypes
 import ctypes.wintypes as wt
+import struct
 import sys
 import time
 
@@ -56,6 +57,29 @@ def send_vk(vk):
         time.sleep(0.03)
 
 
+k32.OpenFileMappingW.restype = wt.HANDLE
+k32.OpenFileMappingW.argtypes = [wt.DWORD, wt.BOOL, wt.LPCWSTR]
+k32.MapViewOfFile.restype = ctypes.c_void_p
+k32.MapViewOfFile.argtypes = [wt.HANDLE, wt.DWORD, wt.DWORD, wt.DWORD, ctypes.c_size_t]
+_view = None
+
+
+def read_state(tid):
+    """(effective_open, effective_mode) from this process' own published block, or None."""
+    global _view
+    if _view is None:
+        h = k32.OpenFileMappingW(4, False, f"Local\\mozc-readable-ime-{tid}")
+        if h:
+            _view = k32.MapViewOfFile(h, 4, 0, 0, 48)
+    if not _view:
+        return None
+    for _ in range(50):
+        a = struct.unpack("<IIIIIIIIIIQ", ctypes.string_at(_view, 48))
+        if a[2] % 2 == 0 and a == struct.unpack("<IIIIIIIIIIQ", ctypes.string_at(_view, 48)):
+            return (a[3], a[4])
+    return None
+
+
 def pump(seconds):
     end = time.time() + seconds
     msg = wt.MSG()
@@ -68,7 +92,13 @@ def pump(seconds):
 
 def main():
     tid_file = sys.argv[1]
-    vks = [int(x, 16) for x in sys.argv[2].split(",")]  # keys to send, one per step
+    # steps: "VK=open:mode" (hex vk; "*" = any) e.g. "F2=1:1,F1=1:2". The key is re-sent (up to 3
+    # times, 8 s each) until the published state matches, so lost keys do not shift the sequence.
+    steps = []
+    for item in sys.argv[2].split(","):
+        vk_s, _, exp = item.partition("=")
+        eo, _, em = exp.partition(":")
+        steps.append((int(vk_s, 16), None if eo in ("", "*") else int(eo), None if em in ("", "*") else int(em)))
     wndproc = WNDPROC(lambda h, m, w, l: u32.DefWindowProcW(h, m, w, l))
     wc = WNDCLASSW()
     wc.lpfnWndProc = wndproc
@@ -87,14 +117,25 @@ def main():
         f.write(str(tid))
     print(f"ui_host: tid={tid} hwnd={(hwnd or 0):#x} fg={u32.GetForegroundWindow() == hwnd}", flush=True)
     pump(6)  # let the TIP load and publish its initial state
-    for n, vk in enumerate(vks):
-        u32.SetForegroundWindow(hwnd)
-        u32.SetFocus(edit)
-        print(f"ui_host: send vk={vk:#x} t_ns={time.time_ns()}", flush=True)
-        send_vk(vk)
-        # The first key in a fresh process took ~3.1 s to take effect in every CI run (a new Mozc
-        # session is created); wait it out so the next key does not arrive mid-activation and get lost.
-        pump(7 if n == 0 else 3)
+    def matches(st, eo, em):
+        return st is not None and (eo is None or st[0] == eo) and (em is None or st[1] == em)
+
+    for n, (vk, eo, em) in enumerate(steps):
+        for attempt in range(1, 4):
+            u32.SetForegroundWindow(hwnd)
+            u32.SetFocus(edit)
+            tag = "send" if attempt == 1 else "again"
+            print(f"ui_host: {tag} vk={vk:#x} t_ns={time.time_ns()} try={attempt}", flush=True)
+            send_vk(vk)
+            deadline = time.time() + 8
+            while time.time() < deadline and not matches(read_state(tid), eo, em):
+                pump(0.05)
+            ok = matches(read_state(tid), eo, em)
+            print(f"ui_host: vk={vk:#x} try={attempt} -> state={read_state(tid)} expected=({eo},{em}) ok={ok}",
+                  flush=True)
+            if ok:
+                break
+        pump(1)
     pump(2)
 
 

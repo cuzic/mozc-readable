@@ -46,8 +46,9 @@ Write-Host '== E. activate and read the published state from another process'
 $here = Split-Path -Parent $MyInvocation.MyCommand.Path
 $tmp = $env:RUNNER_TEMP
 # Keys (mozc ms-ime keymap): 0x19 Kanji = IME on/off toggle, 0xF1 Katakana, 0xF0 Eisu, 0xF2 Hiragana.
-# Sequence: ON -> full katakana -> half alnum -> hiragana -> OFF.
-$keys = '19,F1,F0,F2,19'
+# Sequence: ON (Hiragana key is idempotent) -> full katakana -> half alnum -> hiragana -> OFF.
+# Each step waits for the expected published state and re-sends the key if it was lost.
+$keys = 'F2=1:1,F1=1:2,F0=1:3,F2=1:1,19=0:*'
 
 function Run-Scenario($name, $readerMode, $keys) {
   $tidFile = Join-Path $tmp "tid_$name.txt"
@@ -65,7 +66,7 @@ function Run-Scenario($name, $readerMode, $keys) {
 
 # Warm-up: the first activation starts mozc_server (a previous run saw ~3 s for the first key and a
 # lost key in the cold polling run). Not asserted; only there so the measured runs are steady state.
-$null = Run-Scenario 'warmup' '' '19,19'
+$null = Run-Scenario 'warmup' '' 'F2=1:1,19=0:*'
 $poll = Run-Scenario 'poll' '' $keys
 $t = Get-Content $poll.Rd -Raw
 Check 'reader opened the mapping from another process' ($poll.RdExit -eq 0)
