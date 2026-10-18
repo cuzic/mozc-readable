@@ -105,7 +105,7 @@ def main():
     import time
     k32.GetExitCodeProcess.argtypes = [wt.HANDLE, ctypes.POINTER(wt.DWORD)]
     t0 = time.time()
-    while time.time() - t0 < 25:
+    while time.time() - t0 < 100:
         code = wt.DWORD()
         k32.GetExitCodeProcess(pi.hProcess, ctypes.byref(code))
         if code.value != 259:  # STILL_ACTIVE
@@ -113,7 +113,7 @@ def main():
                   flush=True)
             return
         time.sleep(0.5)
-    print("ac_launch: AppContainer process still alive after 25 s", flush=True)
+    print("ac_launch: AppContainer process still alive after 100 s", flush=True)
 
 
 main()

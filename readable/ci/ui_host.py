@@ -6,6 +6,7 @@ is written to the file given as argv[1]; reader.py (a separate process) reads it
 """
 import ctypes
 import ctypes.wintypes as wt
+import faulthandler
 import struct
 import sys
 import time
@@ -91,6 +92,8 @@ def pump(seconds):
 
 
 def main():
+    faulthandler.enable()  # native crashes (access violation) leave a Python traceback on stderr
+    t_start = time.time()
     tid_file = sys.argv[1]
     # steps: "VK=open:mode" (hex vk; "*" = any) e.g. "F2=1:1,F1=1:2". The key is re-sent (up to 3
     # times, 8 s each) until the published state matches, so lost keys do not shift the sequence.
@@ -137,7 +140,12 @@ def main():
                 break
         pump(1)
     if not steps:
-        pump(float(sys.argv[3]) if len(sys.argv) > 3 else 60)  # idle: let an outside driver work on us
+        idle = float(sys.argv[3]) if len(sys.argv) > 3 else 60  # idle: let an outside driver work on us
+        end = time.time() + idle
+        while time.time() < end:
+            print(f"ui_host: alive t={time.time() - t_start:.0f}s state={read_state(tid)}", flush=True)
+            pump(5)
+        print("ui_host: idle time over, exiting", flush=True)
     pump(2)
 
 

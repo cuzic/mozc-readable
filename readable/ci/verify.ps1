@@ -117,7 +117,10 @@ Run-App 'notepad' 'notepad.exe' '' 'Notepad' 'notepad'
 
 Write-Host '--- appcontainer (the sandbox UWP apps run in): ui_host.py started inside an AppContainer'
 $acDir = Join-Path $tmp 'ac'
-python "$here\ac_launch.py" $acDir 70 | Out-Host
+$acLaunchOut = Join-Path $tmp 'ac_launch.out'
+$acLaunch = Start-Process python -ArgumentList "`"$here\ac_launch.py`" `"$acDir`" 70" -PassThru -RedirectStandardOutput $acLaunchOut -RedirectStandardError "$acLaunchOut.err"
+Start-Sleep -Seconds 12
+Get-Content $acLaunchOut, "$acLaunchOut.err" -ErrorAction SilentlyContinue | Out-Host
 Write-Host '--- Application event log (crash records, last 5 minutes):'
 Get-WinEvent -FilterHashtable @{ LogName = 'Application'; Id = 1000, 1001; StartTime = (Get-Date).AddMinutes(-5) } -ErrorAction SilentlyContinue |
   Select-Object -First 4 | ForEach-Object { "[$($_.Id)] " + (($_.Message -split "`n" | Select-Object -First 12) -join ' | ') } | Out-Host
@@ -125,6 +128,9 @@ Get-Content (Join-Path $acDir 'ac_ui_host.out') -ErrorAction SilentlyContinue | 
 $acOut = Join-Path $tmp 'app_appcontainer.out'
 $d = Start-Process python -ArgumentList "`"$here\drive_foreground.py`" ReadableCiHost F2=1:1,F1=1:2,F0=1:3,F2=1:1,19=0:* 30" -PassThru -Wait -RedirectStandardOutput $acOut -RedirectStandardError "$acOut.err"
 Get-Content $acOut, "$acOut.err" -ErrorAction SilentlyContinue | Out-Host
+Write-Host '--- ac_launch (monitor) output after the drive:'
+$acLaunch.WaitForExit(100000) | Out-Null
+Get-Content $acLaunchOut, "$acLaunchOut.err" -ErrorAction SilentlyContinue | Out-Host
 Write-Host '--- appcontainer ui_host output after the drive:'
 Get-Content (Join-Path $acDir 'ac_ui_host.out') -ErrorAction SilentlyContinue | Out-Host
 Write-Host ("python processes still alive: " + ((Get-Process -Name python -ErrorAction SilentlyContinue | ForEach-Object { $_.Id }) -join ','))
