@@ -75,10 +75,12 @@ struct Snapshot {
   uint32_t scope_forced_mode = 0;
   uint32_t server_ready = 0;
   uint32_t composition_key_seq = 0;
+  uint32_t key_eaten_seq = 0;
   // "Is there anything to write": every published field.
   bool operator==(const Snapshot& o) const {
     return SameState(o) && preedit_utf16_len == o.preedit_utf16_len &&
            preedit_cursor == o.preedit_cursor && key_seq == o.key_seq &&
+           key_eaten_seq == o.key_eaten_seq &&
            composition_key_seq == o.composition_key_seq;
   }
   // "Should the change event be pulsed": the state fields only. Changes of
@@ -142,6 +144,7 @@ class ThreadSlot {
       s->scope_forced_mode = pending_.scope_forced_mode;
       s->server_ready = pending_.server_ready;
       s->composition_key_seq = pending_.composition_key_seq;
+      s->key_eaten_seq = pending_.key_eaten_seq;
     }
     ::InterlockedIncrement(seq);  // even: stable (full barrier)
     last_ = pending_;
@@ -266,6 +269,12 @@ void TipStatePublisher::SetComposition(const TipCompositionState& composition) {
 void TipStatePublisher::CountKeyDown() {
   ThreadSlot& slot = CurrentSlot();
   ++slot.pending().key_seq;
+  if (slot.published() && slot.Flush().pulse) Pulse();
+}
+
+void TipStatePublisher::CountKeyEaten() {
+  ThreadSlot& slot = CurrentSlot();
+  ++slot.pending().key_eaten_seq;
   if (slot.published() && slot.Flush().pulse) Pulse();
 }
 

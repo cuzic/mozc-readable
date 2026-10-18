@@ -18,7 +18,7 @@
 # like deactivation, so it runs on a separate runner. When you add a section, change the ValidateSet below
 # and `matrix.section` in .github/workflows/readable-build.yaml together.
 param([Parameter(Mandatory)][string]$Msi,
-      [ValidateSet('all', 'state', 'apps', 'appcontainer', 'config', 'deactivation', 'composition')][string]$Section = 'all')
+      [ValidateSet('all', 'state', 'apps', 'appcontainer', 'config', 'deactivation', 'composition', 'keyleak')][string]$Section = 'all')
 $ErrorActionPreference = 'Stop'
 $Clsid   = '{AFC94560-63DA-488E-9227-B04F3EF34B5B}'
 $Profile = '{7D7B9A38-A0A4-4390-9706-509E98A8C791}'
@@ -98,7 +98,7 @@ function Run-Scenario($name, $readerMode, $keys) {
 # key (IME on) was lost on all 3 tries (runs 39099740462 and 39100514498, 'all steps reached' was NO).
 # 'deactivation' has its own scenario and does not need it.
 # 'composition' starts cold on purpose (server_ready, ADR-267 D10).
-if ($Section -notin 'deactivation', 'composition') { $null = Run-Scenario 'warmup' '' 'F2=1:1,19=0:*' }
+if ($Section -notin 'deactivation', 'composition', 'keyleak') { $null = Run-Scenario 'warmup' '' 'F2=1:1,19=0:*' }
 
 if (Want 'state') {
 $poll = Run-Scenario 'poll' '' $keys
@@ -239,6 +239,20 @@ foreach ($line in (Get-Content $cpOut -ErrorAction SilentlyContinue)) {
   if ($line -match '^probe: (HARD|SOFT) (.+) ok=(True|False)') {
     if ($Matches[1] -eq 'HARD') { Check $Matches[2] ($Matches[3] -eq 'True') } else { Soft $Matches[2] ($Matches[3] -eq 'True') }
   }
+}
+}
+
+if (Want 'keyleak') {
+Write-Host '== K. key leak experiment (ADR-267 D11): key_leak_probe.py, in-process; observations are in the log lines'
+$tidFile = Join-Path $tmp 'tid_keyleak.txt'
+$klOut = Join-Path $tmp 'keyleak.out'
+# Not `-Wait`, same reason as section J (mozc_server is a child of the probe).
+$kl = Start-Process python -ArgumentList "`"$here\key_leak_probe.py`" `"$tidFile`"" -PassThru -NoNewWindow -RedirectStandardOutput $klOut -RedirectStandardError "$klOut.err"
+if (-not $kl.WaitForExit(150000)) { Write-Host '::warning::key_leak_probe.py did not finish in 150 s; killing it'; $kl.Kill() }
+Get-Content $klOut, "$klOut.err" -ErrorAction SilentlyContinue | Out-Host
+Soft 'key_leak_probe.py ran to the end' ($kl.HasExited -and $kl.ExitCode -eq 0)
+foreach ($line in (Get-Content $klOut -ErrorAction SilentlyContinue)) {
+  if ($line -match '^probe: SOFT (.+) ok=(True|False)') { Soft $Matches[1] ($Matches[2] -eq 'True') }
 }
 }
 

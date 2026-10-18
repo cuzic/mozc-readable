@@ -394,11 +394,12 @@ def main():
     pump(0.2)
 
 
-try:
-    main()
-except SystemExit:
-    raise
-except BaseException:
-    import traceback
-    traceback.print_exc()
-    sys.exit(1)
+if __name__ == "__main__":  # key_leak_probe.py imports the helpers above
+    try:
+        main()
+    except SystemExit:
+        raise
+    except BaseException:
+        import traceback
+        traceback.print_exc()
+        sys.exit(1)

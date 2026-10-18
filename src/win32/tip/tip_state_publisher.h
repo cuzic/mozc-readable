@@ -85,8 +85,11 @@ struct TipSharedState {
   uint32_t scope_forced_mode;     // 0 none, else commands::CompositionMode + 1
   uint32_t server_ready;          // 1 once a server response was received
   uint32_t composition_key_seq;   // key_seq of the key that produced the composition fields
+  // ---- experiment (ci/key-leak-probe, ADR-267 D11; not part of the spec) ----
+  uint32_t key_eaten_seq;         // key-downs the TIP ate (OnTestKeyDown returned eaten=TRUE)
+  uint32_t experiment_reserved;
 };
-static_assert(sizeof(TipSharedState) == 80, "TipSharedState layout changed");
+static_assert(sizeof(TipSharedState) == 88, "TipSharedState layout changed");
 static_assert(offsetof(TipSharedState, update_tick_ms) == 40,
               "TipSharedState layout changed");
 static_assert(offsetof(TipSharedState, phase) == kTipSharedStateV2Size,
@@ -94,6 +97,8 @@ static_assert(offsetof(TipSharedState, phase) == kTipSharedStateV2Size,
 static_assert(offsetof(TipSharedState, key_seq) == 64,
               "TipSharedState layout changed");
 static_assert(offsetof(TipSharedState, composition_key_seq) == 76,
+              "TipSharedState layout changed");
+static_assert(offsetof(TipSharedState, key_eaten_seq) == 80,
               "TipSharedState layout changed");
 
 // The composition fields, produced from `TipPrivateContext::last_output()` in
@@ -130,6 +135,9 @@ class TipStatePublisher {
   // Counts one key-down seen by the TIP (key_seq += 1). Written on every call,
   // never pulses.
   static void CountKeyDown();
+
+  // Counts one key-down the TIP ate (key_eaten_seq += 1). Experiment (D11).
+  static void CountKeyEaten();
 
   // The current key_seq of the calling thread.
   static uint32_t CurrentKeySeq();

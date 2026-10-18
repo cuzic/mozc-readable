@@ -496,7 +496,10 @@ HRESULT TipKeyeventHandler::OnTestKeyDown(TipTextService* text_service,
   // inside OnTest. OnKeyDown is not counted: TSF does not call it for a key
   // OnTestKeyDown did not eat, and counting both would count an eaten key twice.
   TipStatePublisher::CountKeyDown();
-  return OnTestKey(text_service, context, kKeyDown, wparam, lparam, eaten);
+  const HRESULT hr =
+      OnTestKey(text_service, context, kKeyDown, wparam, lparam, eaten);
+  if (eaten != nullptr && *eaten == TRUE) TipStatePublisher::CountKeyEaten();
+  return hr;
 }
 
 HRESULT TipKeyeventHandler::OnTestKeyUp(TipTextService* text_service,
