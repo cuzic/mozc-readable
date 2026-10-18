@@ -115,4 +115,17 @@ if ($chrome) {
 } else { Write-Host '::warning::chrome.exe not found on the runner' }
 Run-App 'notepad' 'notepad.exe' '' 'Notepad' 'notepad'
 
+Write-Host '--- appcontainer (the sandbox UWP apps run in): ui_host.py started inside an AppContainer'
+$acDir = Join-Path $tmp 'ac'
+python "$here\ac_launch.py" $acDir 70 | Out-Host
+Start-Sleep -Seconds 8
+Get-Content (Join-Path $acDir 'ac_ui_host.out') -ErrorAction SilentlyContinue | Out-Host
+$acOut = Join-Path $tmp 'app_appcontainer.out'
+$d = Start-Process python -ArgumentList "`"$here\drive_foreground.py`" ReadableCiHost F2=1:1,F1=1:2,F0=1:3,F2=1:1,19=0:* 30" -PassThru -Wait -RedirectStandardOutput $acOut -RedirectStandardError "$acOut.err"
+Get-Content $acOut, "$acOut.err" -ErrorAction SilentlyContinue | Out-Host
+Soft 'appcontainer: window became foreground' ($d.ExitCode -ne 2)
+Soft 'appcontainer: shared block readable from outside the AppContainer' ($d.ExitCode -notin 2, 3)
+Soft 'appcontainer: all steps reached' ($d.ExitCode -eq 0) "(exit $($d.ExitCode))"
+Get-Process -Name python -ErrorAction SilentlyContinue | Where-Object { $_.Id -ne $PID } | Stop-Process -Force -ErrorAction SilentlyContinue
+
 if ($fail -gt 0) { Write-Host "$fail check(s) failed"; exit 1 }

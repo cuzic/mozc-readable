@@ -95,7 +95,7 @@ def main():
     # steps: "VK=open:mode" (hex vk; "*" = any) e.g. "F2=1:1,F1=1:2". The key is re-sent (up to 3
     # times, 8 s each) until the published state matches, so lost keys do not shift the sequence.
     steps = []
-    for item in sys.argv[2].split(","):
+    for item in [x for x in sys.argv[2].split(",") if x]:
         vk_s, _, exp = item.partition("=")
         eo, _, em = exp.partition(":")
         steps.append((int(vk_s, 16), None if eo in ("", "*") else int(eo), None if em in ("", "*") else int(em)))
@@ -136,6 +136,8 @@ def main():
             if ok:
                 break
         pump(1)
+    if not steps:
+        pump(float(sys.argv[3]) if len(sys.argv) > 3 else 60)  # idle: let an outside driver work on us
     pump(2)
 
 

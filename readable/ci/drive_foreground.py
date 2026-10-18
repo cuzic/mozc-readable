@@ -24,6 +24,7 @@ u32.SetForegroundWindow.argtypes = [wt.HWND]
 u32.ShowWindow.argtypes = [wt.HWND, ctypes.c_int]
 u32.AttachThreadInput.argtypes = [wt.DWORD, wt.DWORD, wt.BOOL]
 u32.GetWindowRect.argtypes = [wt.HWND, ctypes.POINTER(wt.RECT)]
+k32.ProcessIdToSessionId.argtypes = [wt.DWORD, ctypes.POINTER(wt.DWORD)]
 k32.OpenFileMappingW.restype = wt.HANDLE
 k32.OpenFileMappingW.argtypes = [wt.DWORD, wt.BOOL, wt.LPCWSTR]
 k32.MapViewOfFile.restype = ctypes.c_void_p
@@ -87,13 +88,78 @@ def force_foreground(hwnd):
         u32.AttachThreadInput(cur, fg_tid, False)
 
 
+ntdll = ctypes.WinDLL("ntdll")
+adv = ctypes.WinDLL("advapi32", use_last_error=True)
+adv.OpenProcessToken.argtypes = [wt.HANDLE, wt.DWORD, ctypes.POINTER(wt.HANDLE)]
+adv.GetTokenInformation.argtypes = [wt.HANDLE, ctypes.c_int, wt.LPVOID, wt.DWORD, ctypes.POINTER(wt.DWORD)]
+adv.ConvertSidToStringSidW.argtypes = [ctypes.c_void_p, ctypes.POINTER(wt.LPWSTR)]
+k32.OpenProcess.restype = wt.HANDLE
+k32.OpenProcess.argtypes = [wt.DWORD, wt.BOOL, wt.DWORD]
+
+
+class UNICODE_STRING(ctypes.Structure):
+    _fields_ = [("Length", wt.USHORT), ("MaximumLength", wt.USHORT), ("Buffer", wt.LPWSTR)]
+
+
+class OBJECT_ATTRIBUTES(ctypes.Structure):
+    _fields_ = [("Length", wt.ULONG), ("RootDirectory", wt.HANDLE), ("ObjectName", ctypes.POINTER(UNICODE_STRING)),
+                ("Attributes", wt.ULONG), ("SecurityDescriptor", wt.LPVOID), ("SecurityQualityOfService", wt.LPVOID)]
+
+
+def appcontainer_sid(pid):
+    """AC SID string of the process, or None when it is not an AppContainer process."""
+    hp = k32.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
+    if not hp:
+        return None
+    tok = wt.HANDLE()
+    try:
+        if not adv.OpenProcessToken(hp, 8, ctypes.byref(tok)):
+            return None
+        is_ac = wt.DWORD()
+        n = wt.DWORD()
+        if not adv.GetTokenInformation(tok, 29, ctypes.byref(is_ac), 4, ctypes.byref(n)) or not is_ac.value:
+            return None
+        buf = ctypes.create_string_buffer(256)
+        if not adv.GetTokenInformation(tok, 31, buf, 256, ctypes.byref(n)):  # TokenAppContainerSid
+            return None
+        psid = ctypes.c_void_p.from_buffer(buf).value
+        out = wt.LPWSTR()
+        adv.ConvertSidToStringSidW(psid, ctypes.byref(out))
+        return out.value
+    finally:
+        k32.CloseHandle(hp)
+
+
+_ac_logged = set()
+
+
+def open_ac_section(pid, tid):
+    sid = appcontainer_sid(pid)
+    if sid is None:
+        return None
+    sess = wt.DWORD()
+    k32.ProcessIdToSessionId(pid, ctypes.byref(sess))
+    path = f"\\Sessions\\{sess.value}\\AppContainerNamedObjects\\{sid}\\mozc-readable-ime-{tid}"
+    us = UNICODE_STRING(len(path) * 2, len(path) * 2 + 2, path)
+    oa = OBJECT_ATTRIBUTES(ctypes.sizeof(OBJECT_ATTRIBUTES), None, ctypes.pointer(us), 0x40, None, None)
+    h = wt.HANDLE()
+    status = ntdll.NtOpenSection(ctypes.byref(h), 4, ctypes.byref(oa))
+    if (pid, tid) not in _ac_logged:
+        _ac_logged.add((pid, tid))
+        print(f"drive: AppContainer process pid={pid}: NtOpenSection({path}) -> NTSTATUS {status & 0xffffffff:#010x}",
+              flush=True)
+    return h if status == 0 else None
+
+
 _views = {}
 
 
-def state_of_thread(tid):
+def state_of_thread(tid, pid=None):
     v = _views.get(tid)
     if v is None:
         h = k32.OpenFileMappingW(4, False, f"Local\\mozc-readable-ime-{tid}")
+        if not h and pid:
+            h = open_ac_section(pid, tid)
         if not h:
             return None
         v = k32.MapViewOfFile(h, 4, 0, 0, 48)
@@ -111,8 +177,8 @@ def fg_state():
     hwnd = u32.GetForegroundWindow()
     if not hwnd:
         return None, None
-    tid, _ = tid_pid(hwnd)
-    return tid, state_of_thread(tid)
+    tid, pid = tid_pid(hwnd)
+    return tid, state_of_thread(tid, pid)
 
 
 def main():
