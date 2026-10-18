@@ -105,9 +105,14 @@ def main():
     tid_file = sys.argv[1]
     # steps: "VK=open:mode" (hex vk; "*" = any) e.g. "F2=1:1,F1=1:2". The key is re-sent (up to 3
     # times, 8 s each) until the published state matches, so lost keys do not shift the sequence.
+    # "VK=same" is a negative check: send the key once and require the published state to stay as it was
+    # for 4 s (the key has no binding in the current keymap).
     steps = []
     for item in [x for x in sys.argv[2].split(",") if x]:
         vk_s, _, exp = item.partition("=")
+        if exp == "same":
+            steps.append((int(vk_s, 16), "same", None))
+            continue
         eo, _, em = exp.partition(":")
         steps.append((int(vk_s, 16), None if eo in ("", "*") else int(eo), None if em in ("", "*") else int(em)))
     wndproc = WNDPROC(lambda h, m, w, l: u32.DefWindowProcW(h, m, w, l))
@@ -132,6 +137,16 @@ def main():
         return st is not None and (eo is None or st[0] == eo) and (em is None or st[1] == em)
 
     for n, (vk, eo, em) in enumerate(steps):
+        if eo == "same":
+            before = read_state(tid)
+            u32.SetForegroundWindow(hwnd)
+            u32.SetFocus(edit)
+            print(f"ui_host: send vk={vk:#x} t_ns={time.time_ns()} try=1 (expect no change)", flush=True)
+            send_vk(vk)
+            pump(4)
+            after = read_state(tid)
+            print(f"ui_host: vk={vk:#x} expected=same before={before} after={after} ok={before == after}", flush=True)
+            continue
         for attempt in range(1, 4):
             u32.SetForegroundWindow(hwnd)
             u32.SetFocus(edit)

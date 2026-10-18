@@ -4,6 +4,8 @@
 # (CI timing note: measured on run 39099740462, the four sections ran in 59-136 s in parallel versus about 307 s in series.)
 # -Section splits the scenarios so CI can run them in parallel on separate runners (A-D always run):
 #   state = E + E2, apps = G (Chrome, Notepad), appcontainer = the AppContainer check,
+#   config = I (writes config1.db into the user profile and restarts mozc_server: it changes the profile and the
+#   running server, so it has a runner of its own),
 #   deactivation = H (switches the keyboard layout, which is global to the session, so it needs a runner
 #   of its own). 'all' runs everything in this order, as before.
 # Where a new scenario goes: one that only needs the TIP loaded goes in the section that matches what it
@@ -13,7 +15,7 @@
 # like deactivation, so it runs on a separate runner. When you add a section, change the ValidateSet below
 # and `matrix.section` in .github/workflows/readable-build.yaml together.
 param([Parameter(Mandatory)][string]$Msi,
-      [ValidateSet('all', 'state', 'apps', 'appcontainer', 'deactivation')][string]$Section = 'all')
+      [ValidateSet('all', 'state', 'apps', 'appcontainer', 'config', 'deactivation')][string]$Section = 'all')
 $ErrorActionPreference = 'Stop'
 $Clsid   = '{AFC94560-63DA-488E-9227-B04F3EF34B5B}'
 $Profile = '{7D7B9A38-A0A4-4390-9706-509E98A8C791}'
@@ -170,6 +172,34 @@ Soft 'appcontainer: window became foreground' ($d.ExitCode -ne 2)
 Soft 'appcontainer: shared block readable from outside the AppContainer' ($d.ExitCode -notin 2, 3)
 Soft 'appcontainer: all steps reached' ($d.ExitCode -eq 0) "(exit $($d.ExitCode))"
 Get-Process -Name python -ErrorAction SilentlyContinue | Where-Object { $_.Id -ne $PID } | Stop-Process -Force -ErrorAction SilentlyContinue
+}
+
+if (Want 'config') {
+Write-Host '== I. config1.db: a Mozc Readable keymap file at the documented path is read by the running server'
+# awase reads Mozc-family config1.db files (awase-gji-config). The path comes from Mozc's GetUserProfileDirectory:
+# <LocalLow>\<product name>\config1.db, here "Mozc Readable". The default keymap (MS-IME) binds nothing to F8 while
+# the IME is closed (DirectInput) or open (Precomposition); readable/ci/config_make.py writes a CUSTOM keymap in which
+# F8 turns the IME on and off. So a state change on F8 proves the server read this file, from this path.
+$profileDir = Join-Path $env:USERPROFILE 'AppData\LocalLow\Mozc Readable'
+$cfgPath = Join-Path $profileDir 'config1.db'
+Write-Host "config1.db before the test: exists=$(Test-Path $cfgPath) ($cfgPath)"
+Soft 'no config1.db exists yet on a fresh runner (the control below relies on the default keymap)' (-not (Test-Path $cfgPath))
+
+$ctl = Run-Scenario 'cfg-control' '' '77=same'
+$ctlT = Get-Content $ctl.Ui -Raw
+Check 'control: without config1.db, F8 changes nothing while the IME is closed' ($ctlT -match 'vk=0x77 expected=same .* ok=True')
+
+python "$here\config_make.py" $cfgPath | Out-Host
+Check 'config1.db was written' ((Test-Path $cfgPath) -and ((Get-Item $cfgPath).Length -eq 71))
+# The server reads config1.db at startup only: stop it, the TIP starts a new one on the next key.
+Get-Process -Name mozc_server -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+Start-Sleep -Seconds 2
+
+$cus = Run-Scenario 'cfg-custom' '' '77=1:*,77=0:*'
+$cusT = Get-Content $cus.Ui -Raw
+Check 'custom keymap: F8 turns the IME on (the server read config1.db)' ($cusT -match 'vk=0x77 try=\d -> state=\(1, \d\) expected=\(1,None\) ok=True')
+Check 'custom keymap: F8 turns the IME off' ($cusT -match 'vk=0x77 try=\d -> state=\(0, \d\) expected=\(0,None\) ok=True')
+Write-Host ('mozc_server processes now: ' + ((Get-Process -Name mozc_server -ErrorAction SilentlyContinue | ForEach-Object { $_.Id }) -join ','))
 }
 
 if (Want 'deactivation') {
