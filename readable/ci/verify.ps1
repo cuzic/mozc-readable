@@ -1,7 +1,12 @@
 # mozc-readable CI: install the MSI, verify it, publish/read the shared state (uninstall.ps1 follows).
 # Stages A-D are hard checks (exit 1). Stage E (activate the TIP and read published state)
 # is reported with ::warning:: while the activation procedure is still being established.
-param([Parameter(Mandatory)][string]$Msi)
+# -Section splits the scenarios so CI can run them in parallel on separate runners (A-D always run):
+#   state = E + E2, apps = G (Chrome, Notepad), appcontainer = the AppContainer check,
+#   deactivation = H (switches the keyboard layout, which is global to the session, so it needs a runner
+#   of its own). 'all' runs everything in this order, as before.
+param([Parameter(Mandatory)][string]$Msi,
+      [ValidateSet('all', 'state', 'apps', 'appcontainer', 'deactivation')][string]$Section = 'all')
 $ErrorActionPreference = 'Stop'
 $Clsid   = '{AFC94560-63DA-488E-9227-B04F3EF34B5B}'
 $Profile = '{7D7B9A38-A0A4-4390-9706-509E98A8C791}'
@@ -10,6 +15,8 @@ $fail = 0
 function Check($name, $ok, $detail = '') {
   if ($ok) { Write-Host "PASS  $name $detail" } else { Write-Host "FAIL  $name $detail"; $script:fail++ }
 }
+
+function Want($name) { return ($Section -eq 'all' -or $Section -eq $name) }
 
 function Soft($name, $ok, $detail = '') {
   if ($ok) { Write-Host "PASS  $name $detail" } else { Write-Host "::warning::NO    $name $detail" }
@@ -68,6 +75,7 @@ function Run-Scenario($name, $readerMode, $keys) {
   return @{ Ui = $uiOut; Rd = $rdOut; RdExit = $rd.ExitCode }
 }
 
+if (Want 'state') {
 # Warm-up: the first activation starts mozc_server (a previous run saw ~3 s for the first key and a
 # lost key in the cold polling run). Not asserted; only there so the measured runs are steady state.
 $null = Run-Scenario 'warmup' '' 'F2=1:1,19=0:*'
@@ -87,7 +95,9 @@ Check 'reader opened the change event' ($e -match 'opened change event')
 Check 'event woke the reader at least once' ($e -match 'wakes=[1-9]')
 python "$here\summarize.py" $ev.Ui $ev.Rd
 Check 'every key produced a state change within 1000 ms' ($LASTEXITCODE -eq 0)
+}
 
+if (Want 'apps') {
 Write-Host '== G. other applications: is the state published for the foreground thread of a TSF-native app?'
 # Soft checks: this is the question the project exists for, not a regression gate (yet).
 function Run-App($label, $exe, $exeArgs, $class, $procName) {
@@ -116,11 +126,15 @@ if ($chrome) {
   Run-App 'chrome' $chrome "--user-data-dir=`"$udd`" --no-first-run --no-default-browser-check --new-window `"file:///$($page -replace '\\','/')`"" 'Chrome_WidgetWin_1' 'chrome'
 } else { Write-Host '::warning::chrome.exe not found on the runner' }
 Run-App 'notepad' 'notepad.exe' '' 'Notepad' 'notepad'
+}
 
+if (Want 'appcontainer') {
 Write-Host '--- appcontainer (the sandbox UWP apps run in): ui_host.py started inside an AppContainer'
 $acDir = Join-Path $tmp 'ac'
 $acLaunchOut = Join-Path $tmp 'ac_launch.out'
-$acLaunch = Start-Process python -ArgumentList "`"$here\ac_launch.py`" `"$acDir`" 70" -PassThru -RedirectStandardOutput $acLaunchOut -RedirectStandardError "$acLaunchOut.err"
+# 45 s idle: the child lives only while ac_launch.py (its parent) lives, and the drive below needs about 25 s
+# after the 12 s head start (measured: run 39097062197, drive done within ~25 s of the start).
+$acLaunch = Start-Process python -ArgumentList "`"$here\ac_launch.py`" `"$acDir`" 45" -PassThru -RedirectStandardOutput $acLaunchOut -RedirectStandardError "$acLaunchOut.err"
 Start-Sleep -Seconds 12
 Get-Content $acLaunchOut, "$acLaunchOut.err" -ErrorAction SilentlyContinue | Out-Host
 Write-Host '--- Application event log (crash records, last 5 minutes):'
@@ -140,7 +154,9 @@ Soft 'appcontainer: window became foreground' ($d.ExitCode -ne 2)
 Soft 'appcontainer: shared block readable from outside the AppContainer' ($d.ExitCode -notin 2, 3)
 Soft 'appcontainer: all steps reached' ($d.ExitCode -eq 0) "(exit $($d.ExitCode))"
 Get-Process -Name python -ErrorAction SilentlyContinue | Where-Object { $_.Id -ne $PID } | Stop-Process -Force -ErrorAction SilentlyContinue
+}
 
+if (Want 'deactivation') {
 Write-Host '== H. deactivation (LAST: switching the layout is global, so nothing may run after this that needs the TIP)'
 $env:MOZC_CI_DEACTIVATE = '1'
 $de = Run-Scenario 'deactivate' '' 'F2=1:1'
@@ -148,5 +164,6 @@ Remove-Item Env:\MOZC_CI_DEACTIVATE
 $deT = Get-Content $de.Ui -Raw
 Soft 'active=1 before the layout switch' ($deT -match 'before deactivate: active=1')
 Soft 'active becomes 0 after the thread switches to a layout without the TIP' ($deT -match 'deactivate: active=0')
+}
 
 if ($fail -gt 0) { Write-Host "$fail check(s) failed"; exit 1 }

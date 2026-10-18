@@ -4,10 +4,24 @@ name: readable build (x64 MSI)
 on:
   workflow_dispatch:
   push:
-    branches: [readable]
+    branches: [readable, ci/speedup]   # TODO(remove ci/speedup before merging into readable)
+    # Documentation-only pushes do not change the MSI or the verification.
+    paths-ignore:
+      - 'readable/docs/**'
+      - 'readable/README.md'
 
 permissions:
   contents: read
+
+# A newer push supersedes a run that is still going (the verification takes minutes).
+concurrency:
+  group: readable-build-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # The MSI is a function of src/ (its git tree id) and the build steps below. Bump this when you change
+  # how the MSI is built (the Bazel command, the config, the toolchain steps), so a cached MSI is not reused.
+  BUILD_RECIPE: '1'
 
 jobs:
   build_on_x64:
@@ -22,13 +36,29 @@ jobs:
           submodules: false
           persist-credentials: false
 
+      # The MSI depends only on src/ and the build recipe. Most pushes change readable/ci/ only, so reuse
+      # the MSI built from the same src/ tree instead of building it again.
+      - name: Source tree id
+        id: src
+        shell: bash
+        run: echo "tree=$(git rev-parse HEAD:src)" >> "$GITHUB_OUTPUT"
+
+      - name: Reuse the MSI built from the same src/
+        id: msi-cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: msi-cache
+          key: msi-${{ runner.os }}-${{ runner.arch }}-r${{ env.BUILD_RECIPE }}-${{ steps.src.outputs.tree }}
+
       - name: Try to restore update_deps cache
+        if: steps.msi-cache.outputs.cache-hit != 'true'
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
         with:
           path: src/third_party_cache
           key: update_deps-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('src/build_tools/update_deps.py') }}
 
       - name: Install Dependencies
+        if: steps.msi-cache.outputs.cache-hit != 'true'
         shell: cmd
         working-directory: .\src
         # This command uses src/third_party_cache as the download cache.
@@ -37,6 +67,7 @@ jobs:
 
       - name: Restore Qt build cache
         id: qt-cache
+        if: steps.msi-cache.outputs.cache-hit != 'true'
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
         with:
           path: |
@@ -45,7 +76,7 @@ jobs:
           key: qt-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('src/build_tools/build_qt.py', 'src/build_tools/update_deps.py') }}
 
       - name: Build Qt
-        if: steps.qt-cache.outputs.cache-hit != 'true'
+        if: steps.msi-cache.outputs.cache-hit != 'true' && steps.qt-cache.outputs.cache-hit != 'true'
         shell: cmd
         working-directory: .\src
         run: |
@@ -53,13 +84,14 @@ jobs:
 
       # This is needed only for GitHub Actions where free disk space is quite limited.
       - name: Delete Qt src to save disk space
-        if: steps.qt-cache.outputs.cache-hit != 'true'
+        if: steps.msi-cache.outputs.cache-hit != 'true' && steps.qt-cache.outputs.cache-hit != 'true'
         shell: cmd
         working-directory: .\src
         run: |
           rmdir third_party\qt_src /s /q
 
       - name: Restore Bazel disk cache
+        if: steps.msi-cache.outputs.cache-hit != 'true'
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
         with:
           path: ${{ github.workspace }}\bazel-disk-cache
@@ -68,6 +100,7 @@ jobs:
             bazel-${{ runner.os }}-${{ runner.arch }}-
 
       - name: build artifacts
+        if: steps.msi-cache.outputs.cache-hit != 'true'
         shell: cmd
         working-directory: .\src
         env:
@@ -75,19 +108,34 @@ jobs:
         run: |
           bazelisk build package --config release_build --disk_cache=%GITHUB_WORKSPACE%\bazel-disk-cache
 
+      # Put the freshly built MSI where the cache step above saves it (the save happens when the job succeeds).
+      - name: Keep the MSI for reuse
+        if: steps.msi-cache.outputs.cache-hit != 'true'
+        shell: cmd
+        run: |
+          if not exist msi-cache mkdir msi-cache
+          copy src\bazel-bin\win32\installer\Mozc64.msi msi-cache\Mozc64.msi
+
       - name: upload Mozc64_x64.msi
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
           name: Mozc64_x64.msi
-          path: src/bazel-bin/win32/installer/Mozc64.msi
+          path: msi-cache/Mozc64.msi
           if-no-files-found: warn
 
   verify_install:
     # Installs the MSI built above on a clean runner and checks files, registry, TSF registration,
     # coexistence with the official Mozc, the shared-memory state, and uninstall.
+    # The sections run in parallel, each on its own clean runner (readable/ci/verify.ps1 -Section).
+    # 'deactivation' is its own job on purpose: switching the keyboard layout is global to the session,
+    # so nothing else may run on that runner afterwards.
     needs: build_on_x64
     runs-on: windows-2025
-    timeout-minutes: 45
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        section: [state, apps, appcontainer, deactivation]
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -101,27 +149,27 @@ jobs:
           name: Mozc64_x64.msi
           path: msi
 
-      - name: Verify install, shared state and uninstall
+      - name: Verify (${{ matrix.section }})
         shell: pwsh
-        run: ./readable/ci/verify.ps1 -Msi "${{ github.workspace }}\msi\Mozc64.msi"
+        run: ./readable/ci/verify.ps1 -Msi "${{ github.workspace }}\msi\Mozc64.msi" -Section ${{ matrix.section }}
 
       - name: Upload install log
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
-          name: verify-install-log
+          name: verify-install-log-${{ matrix.section }}
           path: install.log
           if-no-files-found: ignore
 
       - name: Uninstall
         if: always()
         shell: pwsh
-        run: ./readable/ci/uninstall.ps1 -Msi "${{ github.workspace }}\\msi\\Mozc64.msi"
+        run: ./readable/ci/uninstall.ps1 -Msi "${{ github.workspace }}\msi\Mozc64.msi"
 
       - name: Upload MSI logs
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
-          name: verify-uninstall-log
+          name: verify-uninstall-log-${{ matrix.section }}
           path: uninstall.log
           if-no-files-found: ignore
