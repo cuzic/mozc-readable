@@ -59,6 +59,20 @@ HANDLE GetChangeEvent() {
   return event;
 }
 
+// Everything that is published, compared as a unit so that "nothing changed" is exact.
+struct Snapshot {
+  uint32_t effective_open = 0;
+  uint32_t effective_mode = 0;
+  uint32_t tsf_open = 0;
+  uint32_t tsf_mode = 0;
+  uint32_t active = 0;
+  bool operator==(const Snapshot& o) const {
+    return effective_open == o.effective_open &&
+           effective_mode == o.effective_mode && tsf_open == o.tsf_open &&
+           tsf_mode == o.tsf_mode && active == o.active;
+  }
+};
+
 // Per-thread mapping. TSF threads are long-lived; the view is released when
 // the thread exits (or the DLL is unloaded).
 class ThreadSlot {
@@ -71,19 +85,29 @@ class ThreadSlot {
     if (mapping_ != nullptr) ::CloseHandle(mapping_);
   }
 
-  // True when the block already holds exactly this state (nothing to publish).
-  bool Unchanged(bool eo, uint32_t em, bool to, uint32_t tm) const {
-    return state_ != nullptr && has_last_ && last_[0] == (eo ? 1u : 0u) &&
-           last_[1] == em && last_[2] == (to ? 1u : 0u) && last_[3] == tm;
-  }
-  void Remember(bool eo, uint32_t em, bool to, uint32_t tm) {
-    last_[0] = eo ? 1u : 0u;
-    last_[1] = em;
-    last_[2] = to ? 1u : 0u;
-    last_[3] = tm;
-    has_last_ = true;
+  Snapshot& pending() { return pending_; }
+
+  // Writes `pending_` to the shared block unless it already holds exactly that.
+  // Returns true when the block was updated (the caller then pulses the event).
+  bool Flush() {
+    TipSharedState* s = Get();
+    if (s == nullptr) return false;
+    if (published_ && last_ == pending_) return false;
+    volatile LONG* seq = reinterpret_cast<volatile LONG*>(&s->seq);
+    ::InterlockedIncrement(seq);  // odd: writing (full barrier)
+    s->effective_open = pending_.effective_open;
+    s->effective_mode = pending_.effective_mode;
+    s->tsf_open = pending_.tsf_open;
+    s->tsf_mode = pending_.tsf_mode;
+    s->active = pending_.active;
+    s->update_tick_ms = ::GetTickCount64();
+    ::InterlockedIncrement(seq);  // even: stable (full barrier)
+    last_ = pending_;
+    published_ = true;
+    return true;
   }
 
+ private:
   TipSharedState* Get() {
     if (state_ != nullptr || tried_) return state_;
     tried_ = true;
@@ -108,50 +132,55 @@ class ThreadSlot {
       return nullptr;
     }
     state_ = static_cast<TipSharedState*>(view);
-    state_->magic = kTipSharedStateMagic;
+    // The block is zero-filled. seq == 0 means "not published yet"; `magic` is
+    // written last so a reader that checks it never sees a half-initialized header.
     state_->version = kTipSharedStateVersion;
     state_->thread_id = tid;
     state_->process_id = ::GetCurrentProcessId();
+    ::MemoryBarrier();
+    state_->magic = kTipSharedStateMagic;
     return state_;
   }
 
- private:
   HANDLE mapping_ = nullptr;
   TipSharedState* state_ = nullptr;
   bool tried_ = false;
-  bool has_last_ = false;
-  uint32_t last_[4] = {};
+  bool published_ = false;
+  Snapshot pending_;
+  Snapshot last_;
 };
+
+ThreadSlot& CurrentSlot() {
+  thread_local ThreadSlot slot;
+  return slot;
+}
+
+void Pulse() {
+  if (HANDLE ev = GetChangeEvent(); ev != nullptr) {
+    ::SetEvent(ev);
+    ::ResetEvent(ev);
+  }
+}
 
 }  // namespace
 
 void TipStatePublisher::Publish(bool effective_open, int effective_mode,
                                 bool tsf_open, int tsf_mode) {
-  thread_local ThreadSlot slot;
-  TipSharedState* s = slot.Get();
-  if (s == nullptr) return;
-  // Every mutator of TipInputModeManager calls in here, mostly without any change (focus moves,
-  // mouse clicks). Do not bump seq or wake the readers for those.
-  if (slot.Unchanged(effective_open, static_cast<uint32_t>(effective_mode),
-                     tsf_open, static_cast<uint32_t>(tsf_mode))) {
-    return;
-  }
-  slot.Remember(effective_open, static_cast<uint32_t>(effective_mode), tsf_open,
-                static_cast<uint32_t>(tsf_mode));
+  ThreadSlot& slot = CurrentSlot();
+  Snapshot& p = slot.pending();
+  p.effective_open = effective_open ? 1 : 0;
+  p.effective_mode = static_cast<uint32_t>(effective_mode);
+  p.tsf_open = tsf_open ? 1 : 0;
+  p.tsf_mode = static_cast<uint32_t>(tsf_mode);
+  // Every mutator of TipInputModeManager calls in here, mostly without any
+  // change (focus moves, mouse clicks): Flush() does nothing for those.
+  if (slot.Flush()) Pulse();
+}
 
-  volatile LONG* seq = reinterpret_cast<volatile LONG*>(&s->seq);
-  ::InterlockedIncrement(seq);  // odd: writing (full barrier)
-  s->effective_open = effective_open ? 1 : 0;
-  s->effective_mode = static_cast<uint32_t>(effective_mode);
-  s->tsf_open = tsf_open ? 1 : 0;
-  s->tsf_mode = static_cast<uint32_t>(tsf_mode);
-  s->update_tick_ms = ::GetTickCount64();
-  ::InterlockedIncrement(seq);  // even: stable (full barrier)
-
-  if (HANDLE ev = GetChangeEvent(); ev != nullptr) {
-    ::SetEvent(ev);
-    ::ResetEvent(ev);
-  }
+void TipStatePublisher::SetActive(bool active) {
+  ThreadSlot& slot = CurrentSlot();
+  slot.pending().active = active ? 1 : 0;
+  if (slot.Flush()) Pulse();
 }
 
 }  // namespace tsf

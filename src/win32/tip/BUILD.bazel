@@ -202,6 +202,7 @@ mozc_cc_library(
     tags = MOZC_TAGS.WIN_ONLY,
     target_compatible_with = ["@platforms//os:windows"],
     deps = [
+        ":tip_state_publisher",
         ":tip_display_attributes",
         ":tip_dll_module",
         ":tip_edit_session",

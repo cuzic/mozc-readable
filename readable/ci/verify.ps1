@@ -11,6 +11,10 @@ function Check($name, $ok, $detail = '') {
   if ($ok) { Write-Host "PASS  $name $detail" } else { Write-Host "FAIL  $name $detail"; $script:fail++ }
 }
 
+function Soft($name, $ok, $detail = '') {
+  if ($ok) { Write-Host "PASS  $name $detail" } else { Write-Host "::warning::NO    $name $detail" }
+}
+
 Write-Host '== A. install'
 $p = Start-Process msiexec.exe -ArgumentList "/i `"$Msi`" /qn /norestart /l*v install.log" -Wait -PassThru
 Check 'msiexec install exit code' ($p.ExitCode -in 0, 3010) "($($p.ExitCode))"
@@ -70,6 +74,7 @@ $null = Run-Scenario 'warmup' '' 'F2=1:1,19=0:*'
 $poll = Run-Scenario 'poll' '' $keys
 $t = Get-Content $poll.Rd -Raw
 Check 'reader opened the mapping from another process' ($poll.RdExit -eq 0)
+Check 'block is version 2 and active=1 while the TIP is live' ($t -match 'active=1 version=2')
 Check 'open: IME turned on is visible'  ($t -match 'eff_open=1 eff_mode=1')
 Check 'mode: full katakana (2) is visible' ($t -match 'eff_open=1 eff_mode=2')
 Check 'mode: half alnum (3) is visible'    ($t -match 'eff_open=1 eff_mode=3')
@@ -77,6 +82,8 @@ Check 'open: IME turned off is visible (last state)' ($t -match 'eff_open=0 eff_
 
 Write-Host '== E2. event-driven reader and key->reader latency'
 $ev = Run-Scenario 'event' 'event' $keys
+$uiT = Get-Content $poll.Ui -Raw
+Soft 'active becomes 0 after the thread switches to a layout without the TIP' ($uiT -match 'deactivate: active=0')
 $e = Get-Content $ev.Rd -Raw
 Check 'reader opened the change event' ($e -match 'opened change event')
 Check 'event woke the reader at least once' ($e -match 'wakes=[1-9]')
@@ -85,9 +92,6 @@ Check 'every key produced a state change within 1000 ms' ($LASTEXITCODE -eq 0)
 
 Write-Host '== G. other applications: is the state published for the foreground thread of a TSF-native app?'
 # Soft checks: this is the question the project exists for, not a regression gate (yet).
-function Soft($name, $ok, $detail = '') {
-  if ($ok) { Write-Host "PASS  $name $detail" } else { Write-Host "::warning::NO    $name $detail" }
-}
 function Run-App($label, $exe, $exeArgs, $class, $procName) {
   Write-Host "--- $label"
   $sp = @{ FilePath = $exe; PassThru = $true }

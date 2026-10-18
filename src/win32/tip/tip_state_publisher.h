@@ -50,10 +50,13 @@ namespace win32 {
 namespace tsf {
 
 inline constexpr uint32_t kTipSharedStateMagic = 0x5A52444D;  // 'MDRZ'
-inline constexpr uint32_t kTipSharedStateVersion = 1;
+inline constexpr uint32_t kTipSharedStateVersion = 2;
 
 // Layout is part of the external interface. Append only, bump the version on
 // incompatible changes. All fields are little-endian 32/64-bit integers.
+// Version 2: the former `reserved` field is `active`. Readers must ignore blocks
+// whose version is lower than 2 (they cannot tell a deactivated TIP from a live one),
+// and must treat seq == 0 as "not published yet" (`magic` is written last).
 struct TipSharedState {
   uint32_t magic;           // kTipSharedStateMagic
   uint32_t version;         // kTipSharedStateVersion
@@ -64,7 +67,7 @@ struct TipSharedState {
   uint32_t tsf_mode;        // commands::CompositionMode (TSF)
   uint32_t thread_id;
   uint32_t process_id;
-  uint32_t reserved;
+  uint32_t active;          // 1 while this TIP is activated on the thread (Activate..Deactivate)
   uint64_t update_tick_ms;  // GetTickCount64() of the last publish
 };
 static_assert(sizeof(TipSharedState) == 48, "TipSharedState layout changed");
@@ -77,6 +80,10 @@ class TipStatePublisher {
   // visibly: if the objects cannot be created, this is a no-op.
   static void Publish(bool effective_open, int effective_mode, bool tsf_open,
                       int tsf_mode);
+
+  // Marks the TIP as activated / deactivated on the calling thread
+  // (TipTextService::ActivateEx / Deactivate).
+  static void SetActive(bool active);
 };
 
 }  // namespace tsf

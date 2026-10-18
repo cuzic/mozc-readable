@@ -65,6 +65,13 @@ k32.MapViewOfFile.argtypes = [wt.HANDLE, wt.DWORD, wt.DWORD, wt.DWORD, ctypes.c_
 _view = None
 
 
+def read_active(tid):
+    """`active` field (version >= 2) of this process' own published block, or None."""
+    if read_state(tid) is None:
+        return None
+    return struct.unpack("<IIIIIIIIIIQ", ctypes.string_at(_view, 48))[9]
+
+
 def read_state(tid):
     """(effective_open, effective_mode) from this process' own published block, or None."""
     global _view
@@ -139,6 +146,17 @@ def main():
             if ok:
                 break
         pump(1)
+    if steps:
+        # Deactivation: switching this thread to a layout without a TIP must reset `active`.
+        print(f"ui_host: before deactivate: active={read_active(tid)}", flush=True)
+        u32.LoadKeyboardLayoutW.restype = ctypes.c_void_p
+        u32.ActivateKeyboardLayout.argtypes = [ctypes.c_void_p, wt.UINT]
+        hkl = u32.LoadKeyboardLayoutW("00000409", 1)
+        u32.ActivateKeyboardLayout(hkl, 0)
+        end = time.time() + 8
+        while time.time() < end and read_active(tid) != 0:
+            pump(0.1)
+        print(f"ui_host: deactivate: active={read_active(tid)}", flush=True)
     if not steps:
         idle = float(sys.argv[3]) if len(sys.argv) > 3 else 60  # idle: let an outside driver work on us
         end = time.time() + idle

@@ -72,7 +72,7 @@ def main():
                 if not seen or seen[-1] != state:
                     seen.append(state)
                     print(f"reader: seq={s[2]} eff_open={s[3]} eff_mode={s[4]} "
-                          f"tsf_open={s[5]} tsf_mode={s[6]} tid={s[7]} pid={s[8]} "
+                          f"tsf_open={s[5]} tsf_mode={s[6]} tid={s[7]} pid={s[8]} active={s[9]} version={s[1]} "
                           f"t_ns={time.time_ns()}", flush=True)
         if not (use_event and ev):
             time.sleep(0.02)
