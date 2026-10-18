@@ -100,6 +100,19 @@ def describe_focus():
     return f"fg={cls_of(fg)!r} focus={focus!r} tid={tid}"
 
 
+def focus_class():
+    """Class of the keyboard-focus window of the foreground thread (None when there is none)."""
+    fg = u32.GetForegroundWindow()
+    if not fg:
+        return None
+    tid, _ = tid_pid(fg)
+    info = GUITHREADINFO()
+    info.cbSize = ctypes.sizeof(GUITHREADINFO)
+    if u32.GetGUIThreadInfo(tid, ctypes.byref(info)) and info.hwndFocus:
+        return cls_of(info.hwndFocus)
+    return None
+
+
 def force_foreground(hwnd):
     fg = u32.GetForegroundWindow()
     cur = k32.GetCurrentThreadId()
@@ -259,6 +272,24 @@ def main():
           flush=True)
     if st is None:
         sys.exit(3)
+
+    # The keys must reach an input, not the frame: in Chrome the keyboard focus sits on the top-level frame
+    # (Chrome_WidgetWin_1) until the page's input gets it, and the first IME-on key was lost then (run 39105209924:
+    # focus='Chrome_WidgetWin_1' at the first send, the resend 8 s later worked). Click until the focus is on a child
+    # window (Chrome_RenderWidgetHostHWND, Edit, ...), at most 10 s.
+    top_class = cls_of(hwnd) if hwnd else None
+    focus_deadline = time.time() + 10
+    while time.time() < focus_deadline:
+        fc = focus_class()
+        if fc and fc != top_class:
+            break
+        r = wt.RECT()
+        u32.GetWindowRect(hwnd, ctypes.byref(r))
+        u32.SetCursorPos((r.left + r.right) // 2, (r.top + r.bottom) // 2 + 40)
+        u32.mouse_event(2, 0, 0, 0, 0)
+        u32.mouse_event(4, 0, 0, 0, 0)
+        time.sleep(0.5)
+    print(f"drive: keyboard focus before the keys: [{describe_focus()}]", flush=True)
 
     def matches(s, eo, em):
         return s is not None and (eo is None or s[0] == eo) and (em is None or s[1] == em)
