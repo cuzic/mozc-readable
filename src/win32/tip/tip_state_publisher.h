@@ -98,7 +98,7 @@ struct TipSharedState {
   uint32_t revert_count;             // REVERT requested by OnEndEdit (composition range empty)
   uint32_t submit_other_count;       // SUBMIT requested by a UI element (candidate window / indicator)
   uint32_t edit_session_fail_count;  // RequestEditSession failed (or its session returned a failure)
-  uint32_t diag_flags;               // bit0: use_async_lock_in_key_handler, bit1: last_output_is_test
+  uint32_t diag_flags;               // bit0: use_async_lock_in_key_handler, bit1: an Update saw last_output_is_test (sticky)
   uint32_t update_context_id;        // low 32 bits of the ITfContext* TipUiHandler::Update last read
 };
 static_assert(sizeof(TipSharedState) == 112, "TipSharedState layout changed");
@@ -185,7 +185,7 @@ class TipStatePublisher {
   // The use_async_lock_in_key_handler flag of the thread context.
   static void SetAsyncLockInKeyHandler(bool value);
   // What TipUiHandler::Update read: the context (low 32 bits of the pointer) and
-  // whether its last_output() was a TEST_SEND_KEY response.
+  // whether its last_output() was a TEST_SEND_KEY response (sticky bit).
   static void SetUpdateInfo(uint32_t context_id, bool last_output_is_test);
 
   // Records whether the last call to the Mozc server got a response.

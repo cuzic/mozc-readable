@@ -327,6 +327,15 @@ def main():
           flush=True)
     result("SOFT", "fast typing: fewer pulses than keys (preedit/key_seq changes do not pulse)", p.pulses - pulses0 < len(letters),
            f"pulses={p.pulses - pulses0} keys={len(letters)}")
+    # Plain EDIT, before any focus move: nothing ended the composition behind the TIP's back.
+    s = p.st()
+    plain = {k: s[k] for k in V4_COUNTERS}
+    print(f"probe: info version 4 counters in the plain EDIT: {plain} flags={s['flags']:#x} ctx={s['ctx']:#x}", flush=True)
+    result("SOFT", "no SUBMIT/REVERT was requested and no edit session failed in a plain EDIT (counters 0)",
+           s["sub_ee"] == 0 and s["sub_term"] == 0 and s["revert"] == 0 and s["esf"] == 0,
+           " ".join(f"{k}={s[k]}" for k in V4_COUNTERS))
+    result("SOFT", "update_context_id is set and the sticky last_output_is_test / use_async_lock flags are 0",
+           s["ctx"] != 0 and s["flags"] & 3 == 0, f"flags={s['flags']:#x} ctx={s['ctx']:#x}")
     # Context change in the middle of a composition: focus the other EDIT and look (D9, observation).
     p.focus(num)
     pump(1.0)
@@ -340,14 +349,11 @@ def main():
     s = p.settle(s["key_seq"], lambda s: s["phase"] == 0, 5)
     result("SOFT", "back to phase=0 after Esc", s and s["phase"] == 0, fmt(s))
 
-    # ---- version 4 diagnostics: a plain EDIT never submits by itself, never fails an edit session.
+    # ---- version 4 diagnostics after the focus move: the app ended the composition, the TIP submitted it.
     s = p.st()
-    print(f"probe: info version 4 counters: { {k: s[k] for k in V4_COUNTERS} } flags={s['flags']:#x} ctx={s['ctx']:#x}", flush=True)
-    result("SOFT", "no SUBMIT/REVERT was requested and no edit session failed in a plain EDIT (counters 0)",
-           s["sub_ee"] == 0 and s["sub_term"] == 0 and s["revert"] == 0 and s["esf"] == 0,
-           " ".join(f"{k}={s[k]}" for k in V4_COUNTERS))
-    result("SOFT", "update_context_id is set and last_output_is_test / use_async_lock flags are 0",
-           s["ctx"] != 0 and s["flags"] & 3 == 0, f"flags={s['flags']:#x} ctx={s['ctx']:#x}")
+    print(f"probe: info version 4 counters now: { {k: s[k] for k in V4_COUNTERS} }", flush=True)
+    result("SOFT", "moving focus mid-composition shows up as a SUBMIT counter (sub_term/sub_ee) or nothing; no edit session failed",
+           s["esf"] == 0, " ".join(f"{k}={s[k]}" for k in V4_COUNTERS))
     result("HARD", "the version 4 counters never went backwards since the start of the composition checks",
            all(i32(s[k] - c0[k]) >= 0 for k in V4_COUNTERS), " ".join(f"{k}:{c0[k]}->{s[k]}" for k in V4_COUNTERS))
 

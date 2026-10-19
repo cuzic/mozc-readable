@@ -373,7 +373,9 @@ void TipStatePublisher::SetUpdateInfo(uint32_t context_id,
   ThreadSlot& slot = CurrentSlot();
   Snapshot& p = slot.pending();
   p.update_context_id = context_id;
-  p.diag_flags = last_output_is_test ? (p.diag_flags | 2u) : (p.diag_flags & ~2u);
+  // Sticky: an Update that saw a TEST_SEND_KEY response is rare, and the next
+  // edit session clears the state the flag would otherwise show.
+  if (last_output_is_test) p.diag_flags |= 2u;
   FlushDiagnostic(slot);
 }
 

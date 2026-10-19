@@ -102,7 +102,7 @@ ZMK など Raw HID の仕組みが標準で無いファームについては、�
 | 92 | u32 | `revert_count` | `OnEndEdit` が REVERT を要求した回数。composition の範囲が空になったとき |
 | 96 | u32 | `submit_other_count` | 候補窓・インジケータの UI 要素が SUBMIT を要求した回数(クリックなど) |
 | 100 | u32 | `edit_session_fail_count` | `RequestEditSession` が失敗した(または編集セッションが失敗を返した)回数 |
-| 104 | u32 | `diag_flags` | bit0=スレッドの `use_async_lock_in_key_handler`(一度 `TF_E_SYNCHRONOUS` が返ると真になる)、bit1=`TipUiHandler::Update` が最後に読んだ context の `last_output` が TEST_SEND_KEY の応答(`last_output_is_test`) |
+| 104 | u32 | `diag_flags` | bit0=スレッドの `use_async_lock_in_key_handler`(一度 `TF_E_SYNCHRONOUS` が返ると真になる)、bit1=`TipUiHandler::Update` が、`last_output` が TEST_SEND_KEY の応答(`last_output_is_test`)の context を**一度でも**読んだ(一度立つと下がらない。編集セッションごとに `last_output_is_test` は偽へ戻るため、瞬間値では見えない) |
 | 108 | u32 | `update_context_id` | `TipUiHandler::Update` が最後に読んだ `ITfContext*` の**下位 32 ビット**。context の同一性の比較にだけ使う(ポインタとしては使えない) |
 
 - 全体は 112 バイト(`update_tick_ms`〈u64〉がオフセット 40 で 8 の倍数、version 3 の追記の u32×8 が 48〜79、version 4 の追記の u32×8 が 80〜111。暗黙の詰め物なし)。今後の追記は 112 から始め、u64 は 8 の倍数のオフセットに置く。参考: Python は `struct.Struct("<10IQ16I")`(= 112、version 3 だけなら `<10IQ8I` = 80)。
