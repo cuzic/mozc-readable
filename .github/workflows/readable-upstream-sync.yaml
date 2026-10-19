@@ -67,6 +67,13 @@ jobs:
           if gh release list --limit 200 --json tagName --jq '.[].tagName' | grep -q "^v${TAG}-readable\."; then
             echo "already released for $TAG"; echo "skip=true" >> "$GITHUB_OUTPUT"; exit 0
           fi
+          # Never go back: readable may already be based on a newer upstream than the latest tag (it was, for
+          # v3.34.6239-readable.1/.2, whose content is 3.35.6354). Rebasing onto an older tag would drop upstream changes.
+          NEWEST=$(gh release list --limit 200 --json tagName --jq '.[].tagName' \
+            | sed -nE 's/^v([0-9]+\.[0-9]+\.[0-9]+)-readable\.[0-9]+$/\1/p' | sort -V | tail -1)
+          if [ -n "$NEWEST" ] && [ "$(printf '%s\n%s\n' "$NEWEST" "$TAG" | sort -V | tail -1)" = "$NEWEST" ]; then
+            echo "upstream $TAG is not newer than the newest release ($NEWEST)"; echo "skip=true" >> "$GITHUB_OUTPUT"; exit 0
+          fi
           if git ls-remote --exit-code --heads origin "sync/${TAG}" >/dev/null 2>&1; then
             echo "sync/${TAG} already exists (delete the branch to retry)"; echo "skip=true" >> "$GITHUB_OUTPUT"; exit 0
           fi
