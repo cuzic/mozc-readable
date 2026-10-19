@@ -496,7 +496,7 @@ HRESULT TipKeyeventHandler::OnTestKeyDown(TipTextService* text_service,
   // inside OnTest. OnKeyDown counts only a key-down that OnTestKeyDown did not
   // count (a host that skips OnTestKeyDown, e.g. Windows Terminal), so an eaten
   // key is not counted twice.
-  TipStatePublisher::CountKeyDown();
+  TipStatePublisher::CountKeyDown(static_cast<uint32_t>(wparam));
   const HRESULT hr =
       OnTestKey(text_service, context, kKeyDown, wparam, lparam, eaten);
   // TSF does not call OnKeyDown for a key that was not eaten.
@@ -515,7 +515,7 @@ HRESULT TipKeyeventHandler::OnTestKeyUp(TipTextService* text_service,
 HRESULT TipKeyeventHandler::OnKeyDown(TipTextService* text_service,
                                       ITfContext* context, WPARAM wparam,
                                       LPARAM lparam, BOOL* eaten) {
-  TipStatePublisher::CountKeyDownUnlessCounted();
+  TipStatePublisher::CountKeyDownUnlessCounted(static_cast<uint32_t>(wparam));
   return OnKey(text_service, context, kKeyDown, wparam, lparam, eaten);
 }
 

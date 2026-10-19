@@ -129,13 +129,16 @@ class TipStatePublisher {
 
   // Counts one key-down seen by the TIP (key_seq += 1). Written on every call,
   // never pulses.
-  static void CountKeyDown();
+  // `vk` is remembered as the key that was counted; kAnyKey (a preserved key,
+  // whose VK is known only later) matches every key.
+  static constexpr uint32_t kAnyKey = 0xFFFFFFFFu;
+  static void CountKeyDown(uint32_t vk = kAnyKey);
 
-  // Called from OnKeyDown. If the key-down was already counted by
+  // Called from OnKeyDown. If this very key-down was already counted by
   // CountKeyDown() (OnTestKeyDown ate it, or OnPreservedKey), consumes that
   // mark and counts nothing. Otherwise the host called OnKeyDown without a
-  // preceding OnTestKeyDown (observed in Windows Terminal), so counts it.
-  static void CountKeyDownUnlessCounted();
+  // preceding OnTestKeyDown for it (observed in Windows Terminal), so counts it.
+  static void CountKeyDownUnlessCounted(uint32_t vk);
 
   // Forgets the "already counted" mark: OnTestKeyDown did not eat the key, so
   // TSF will not call OnKeyDown for it.
