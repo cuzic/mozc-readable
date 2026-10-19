@@ -176,8 +176,9 @@ class TipStatePublisher {
   // preceding OnTestKeyDown for it (observed in Windows Terminal), so counts it.
   static void CountKeyDownUnlessCounted(uint32_t vk);
 
-  // Forgets the "already counted" mark: OnTestKeyDown did not eat the key, so
-  // TSF will not call OnKeyDown for it.
+  // Forgets the newest "already counted" mark: the key CountKeyDown() just
+  // counted will not reach OnKeyDown (OnTestKeyDown did not eat it, or
+  // OnPreservedKey found no such preserved key).
   static void ForgetCountedKeyDown();
 
   // The current key_seq of the calling thread.

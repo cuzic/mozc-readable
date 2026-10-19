@@ -446,8 +446,16 @@ class UpdateUiEditSessionImpl final : public TipComImplements<ITfEditSession> {
   STDMETHODIMP DoEditSession(TfEditCookie edit_cookie) override {
     RendererCommand command;
     bool no_layout = false;
+    // mozc-readable: the focus moved to this context, so the composition fields
+    // follow it (an unmanaged context has none).
+    std::optional<TipCompositionState> composition;
     UpdateCommand(text_service_.get(), context_.get(), edit_cookie, &command,
-                  &no_layout);
+                  &no_layout, &composition);
+    if (composition.has_value()) {
+      TipStatePublisher::SetComposition(*composition);
+    } else if (text_service_->GetPrivateContext(context_.get()) == nullptr) {
+      TipStatePublisher::SetComposition(TipCompositionState());
+    }
     if (!no_layout || !command.visible()) {
       Win32RendererClient::OnUpdated(command);
     }
