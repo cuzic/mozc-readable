@@ -392,9 +392,8 @@ void UpdateCommand(TipTextService* text_service, ITfContext* context,
   // A TEST_SEND_KEY response in last_output() is not what the server made of
   // the key, so no composition fields are made from it (ADR-267 D5, R4-M1).
   if (composition != nullptr && private_context != nullptr) {
-    TipStatePublisher::SetUpdateInfo(
-        static_cast<uint32_t>(reinterpret_cast<uintptr_t>(context)),
-        private_context->last_output_is_test());
+    TipStatePublisher::SetUpdateInfo(private_context->serial(),
+                                     private_context->last_output_is_test());
   }
   if (composition != nullptr && private_context != nullptr &&
       !private_context->last_output_is_test()) {

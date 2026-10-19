@@ -31,6 +31,7 @@
 
 #include <msctf.h>
 
+#include <atomic>
 #include <cstdint>
 #include <memory>
 
@@ -54,9 +55,14 @@ using ::mozc::client::ClientInterface;
 using ::mozc::commands::Capability;
 using ::mozc::commands::Output;
 
+std::atomic<uint32_t> g_next_serial{1};
+
 class TipPrivateContext::InternalState {
  public:
-  InternalState() : client_(ClientFactory::NewClient()) {}
+  InternalState()
+      : client_(ClientFactory::NewClient()),
+        serial_(g_next_serial.fetch_add(1, std::memory_order_relaxed)) {}
+  const uint32_t serial_;
   std::unique_ptr<client::ClientInterface> client_;
   SurrogatePairObserver surrogate_pair_observer_;
   commands::Output last_output_;
@@ -120,6 +126,8 @@ const Output& TipPrivateContext::last_output() const {
 Output* TipPrivateContext::mutable_last_output() {
   return &state_->last_output_;
 }
+
+uint32_t TipPrivateContext::serial() const { return state_->serial_; }
 
 uint32_t TipPrivateContext::last_output_key_seq() const {
   return state_->last_output_key_seq_;

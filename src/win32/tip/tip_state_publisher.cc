@@ -279,6 +279,9 @@ void TipStatePublisher::SetActive(bool active) {
   ThreadSlot& slot = CurrentSlot();
   Snapshot& p = slot.pending();
   p.active = active ? 1 : 0;
+  // The thread context (and its use_async_lock_in_key_handler) is created anew by
+  // ActivateEx and dropped by Deactivate, so the mirror of its flag restarts too.
+  p.diag_flags &= ~1u;
   if (!active) {
     // The composition fields would otherwise outlive the TIP (ADR-267 D9).
     // key_seq is a counter and stays.

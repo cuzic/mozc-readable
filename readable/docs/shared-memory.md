@@ -3,7 +3,7 @@
 [mozc-readable](https://github.com/cuzic/mozc-readable) の TIP(Mozc の TSF 入力方式)が書き出す、IME の開閉・入力モードの共有メモリの仕様です。awase を含め、外部のプロセスが「いまの IME の状態」を読むための取り決めです。方針と経緯は [ADR-265](https://github.com/cuzic/awase/blob/develop/docs/adr/265-mozc-readable-integration.md)(awase リポジトリ) を参照してください。
 
 - 本書の「ADR-nnn」は、awase リポジトリの `docs/adr/` の文書を指します。
-- **版**: **version 4**(112 バイト。診断用のカウンタなどを追加。本ブランチで実装中・CI 確認前。6-3)。以下の記述のうち version 3 までは次のとおり: **version 3**(80 バイト。組成の状態を追加。ADR-267)を実装中です(`feat/composition-state-v3`、CI 確認前。2 章の version 3 の項目は**実測がまだありません**)。version 2 の最初の 48 バイトは変わりません。**version 2** が `readable` ブランチに入っています(コミット `aa228f6`、2026-10-18)。**CI で確認済みです**(通常の窓・Chrome・Notepad・AppContainer の窓から、別プロセスが値を読めること。IME を切り替えたあとの `active=0` も実測済み。5-1)。**リリース済みのビルドはまだありません**。version 1(`reserved` のまま、`magic` が先に書かれる)の読み方は、古いビルド向けに 6 章に残します。
+- **版**: **version 4**(112 バイト。診断用のカウンタなどを追加。6-3)。version 3(80 バイト。組成の状態。ADR-267)は `readable` に入っています(a0c5074c、PR #4)。version 2 は `aa228f6`。version 2 の動作は CI で確認済みです(通常の窓・Chrome・Notepad・AppContainer の窓から別プロセスが読めること。IME を切り替えたあとの `active=0` も実測済み。5-1)。version 4 の項目は**実機での実測がまだありません**。version 1(`reserved` のまま、`magic` が先に書かれる)の読み方は、古いビルド向けに 6 章に残します。
 - 出典: mozc-readable の `src/win32/tip/tip_state_publisher.{h,cc}`(`readable` ブランチ)。食い違いがあれば実装が正です。
 - 効く IME は mozc-readable だけです(公式の Mozc・Google 日本語入力・Microsoft IME には書き出し側が無い)。
 
@@ -96,14 +96,14 @@ ZMK など Raw HID の仕組みが標準で無いファームについては、�
 | 68 | u32 | `scope_forced_mode` | 入力スコープが 1 つのモードに決めているときの「`CompositionMode` の値 + 1」。0=指定なし。**1(DIRECT)は「IME を閉じる」指定で、`effective_mode` は変わらない**。値は 0〜6 |
 | 72 | u32 | `server_ready` | 1=この TIP が Mozc サーバーから応答を受け取れている。0=まだ応答を受けていない、または直近の呼び出しが失敗した。**仮説の段階で、cold の指標かは未確認**(下記) |
 | 76 | u32 | `composition_key_seq` | `phase`・`candidate_category`・`preedit_*` の元になった出力を**生んだ打鍵**の `key_seq`(下記「鮮度」) |
-| 80 | u32 | `composition_start_count` | `phase` が 0 から 0 以外になった回数(単調増加、ラップする)。`phase=1` が数 ms しか続かず読み手が取りこぼしても、増えた数で分かる |
+| 80 | u32 | `composition_start_count` | **スレッドの公開 `phase`** が 0 から 0 以外になった回数(単調増加、ラップする)。context をまたぐ: フォーカスが別の context に移って戻ると、新しい組成が無くても増えうる。`update_context_id` の変化と並べて読む。`phase=1` が数 ms しか続かず読み手が取りこぼしても、増えた数で分かる |
 | 84 | u32 | `submit_end_edit_count` | `OnEndEdit` が SUBMIT を要求した回数。選択範囲が composition の外に出たとき |
-| 88 | u32 | `submit_terminated_count` | `OnCompositionTerminated` が SUBMIT を送った回数。アプリ側が composition を終わらせたとき |
+| 88 | u32 | `submit_terminated_count` | `OnCompositionTerminated` が SUBMIT を**送ろうとした**回数(送信の失敗も含む)。アプリ側が composition を終わらせたとき |
 | 92 | u32 | `revert_count` | `OnEndEdit` が REVERT を要求した回数。composition の範囲が空になったとき |
-| 96 | u32 | `submit_other_count` | 候補窓・インジケータの UI 要素が SUBMIT を要求した回数(クリックなど) |
-| 100 | u32 | `edit_session_fail_count` | `RequestEditSession` が失敗した(または編集セッションが失敗を返した)回数 |
-| 104 | u32 | `diag_flags` | bit0=スレッドの `use_async_lock_in_key_handler`(一度 `TF_E_SYNCHRONOUS` が返ると真になる)、bit1=`TipUiHandler::Update` が、`last_output` が TEST_SEND_KEY の応答(`last_output_is_test`)の context を**一度でも**読んだ(一度立つと下がらない。編集セッションごとに `last_output_is_test` は偽へ戻るため、瞬間値では見えない) |
-| 108 | u32 | `update_context_id` | `TipUiHandler::Update` が最後に読んだ `ITfContext*` の**下位 32 ビット**。context の同一性の比較にだけ使う(ポインタとしては使えない) |
+| 96 | u32 | `submit_other_count` | UI-less のアプリが候補 UI 要素に `Finalize` / `Abort` を呼んだ回数(どちらも SUBMIT として数える。Mozc 自身の候補窓のクリックは数えない) |
+| 100 | u32 | `edit_session_fail_count` | `RequestEditSession` が失敗した(または**同期で実行された**編集セッションが失敗を返した)回数。非同期で許可されたセッションが後で失敗しても数えない。`TF_E_SYNCHRONOUS`(Word の回避策が始まる合図)も入る(`diag_flags` の bit0 と並べて区別する) |
+| 104 | u32 | `diag_flags` | bit0=スレッドの `use_async_lock_in_key_handler`(一度 `TF_E_SYNCHRONOUS` が返ると真になる。`ActivateEx`/`Deactivate` で落ちる)、bit1=`TipUiHandler::Update` が、`last_output` が TEST_SEND_KEY の応答(`last_output_is_test`)の context を**一度でも**読んだ(一度立つと下がらない。編集セッションごとに `last_output_is_test` は偽へ戻るため、瞬間値では見えない) |
+| 108 | u32 | `update_context_id` | `TipUiHandler::Update` が最後に読んだ context(`TipPrivateContext`)の**通番**(プロセス内で 1 から増える。ポインタではなく、解放後に同じ値が再利用されない)。context の同一性の比較にだけ使う |
 
 - 全体は 112 バイト(`update_tick_ms`〈u64〉がオフセット 40 で 8 の倍数、version 3 の追記の u32×8 が 48〜79、version 4 の追記の u32×8 が 80〜111。暗黙の詰め物なし)。今後の追記は 112 から始め、u64 は 8 の倍数のオフセットに置く。参考: Python は `struct.Struct("<10IQ16I")`(= 112、version 3 だけなら `<10IQ8I` = 80)。
 - **version 4 の項目(オフセット 80〜111)は診断用**です(「ひらがなにはなるが変換候補にならない」型の症状を調べるため。Windows Terminal で観測)。カウンタはすべて単調増加でラップし、**変化したときだけ書き、通知イベントは pulse しません**。`active == 0` のときは他の項目と同じく無視し、`Deactivate` でもカウンタは 0 に戻しません(スレッドの通算)。読み手は差を取って使います。
@@ -141,7 +141,7 @@ ZMK など Raw HID の仕組みが標準で無いファームについては、�
 ### 3-1. 書く判定と pulse する判定は別
 
 - **書くかどうか**は、公開する全項目(`key_seq` を含む)の比較です。どれかが変わったときだけ書き、変化が無ければ `seq` も進めません(フォーカス移動やクリックのたびに呼ばれるが、ほとんどは無変更のため)。
-- **通知イベントを pulse するかどうか**は、状態の項目(`active`・`effective_*`・`tsf_*`・`phase`・`candidate_category`・`scope_forced_mode`・`server_ready`)の変化だけです。`preedit_utf16_len`・`preedit_cursor`・`key_seq`・`composition_key_seq` だけが変わったときは書きますが pulse しません(打鍵のたびに起こされるのを避けるため)。これらは、状態の変化で起きたときに読み直すか、自分の打鍵の後に読んでください。最初の書き込みは常に pulse します。
+- **通知イベントを pulse するかどうか**は、状態の項目(`active`・`effective_*`・`tsf_*`・`phase`・`candidate_category`・`scope_forced_mode`・`server_ready`)の変化だけです。`preedit_utf16_len`・`preedit_cursor`・`key_seq`・`composition_key_seq` と、version 4 の項目(80〜111)だけが変わったときは書きますが pulse しません(打鍵のたびに起こされるのを避けるため)。これらは、状態の変化で起きたときに読み直すか、自分の打鍵の後に読んでください。最初の書き込みは常に pulse します。
 - したがって **`update_tick_ms` は「最後に書いた時刻」であり、生存の印ではありません**。
 - 書き込みの手順: `seq` を +1(奇数)→ 項目と `update_tick_ms` を書く → `seq` を +1(偶数)。どちらの +1 も全バリア(`InterlockedIncrement`)。
 - 組成の項目(`phase`・`candidate_category`・`preedit_*`・`composition_key_seq`)は、TIP が UI を更新する地点(`TipUiHandler::Update`、編集セッションの末尾)で書きます。`key_seq` は打鍵の入口で、`scope_forced_mode` は入力モードの更新(フォーカス移動・入力スコープの変化)で書きます。

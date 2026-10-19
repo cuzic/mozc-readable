@@ -299,7 +299,7 @@ def main():
     s = p.settle(s["key_seq"], lambda s: s["phase"] == 0, 5)
 
     # ---- phase / candidate_category / preedit: k -> ka -> Space -> Enter
-    c0 = p.st()
+    c0 = p.st() or {k: 0 for k in NAMES}
     s, d = p.press(0x4B)  # K
     k_after = s["key_seq"]
     s = p.settle(k_after, lambda s: s["phase"] == 1)
