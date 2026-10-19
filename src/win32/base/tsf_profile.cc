@@ -96,7 +96,11 @@ LANGID TsfProfile::GetLangId() { return kTextServiceLanguage; }
 int TsfProfile::GetIconIndex() { return 0; }
 
 int TsfProfile::GetDescriptionTextIndex() {
+#ifdef GOOGLE_JAPANESE_INPUT_BUILD
   return IDS_TEXTSERVICE_DISPLAYNAME_SYNONYM;
+#else
+  return IDS_TEXTSERVICE_DISPLAYNAME_READABLE;
+#endif  // GOOGLE_JAPANESE_INPUT_BUILD
 }
 
 }  // namespace win32
