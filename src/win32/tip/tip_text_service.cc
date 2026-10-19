@@ -834,6 +834,9 @@ class TipTextServiceImpl
     TipStatePublisher::CountKeyDown();
     const auto it = preserved_key_map_.find(guid);
     if (it == preserved_key_map_.end()) {
+      // OnKeyDown will not follow: drop the mark, or it would swallow the count
+      // of the next key-down that reaches OnKeyDown alone.
+      TipStatePublisher::ForgetCountedKeyDown();
       return result;
     }
     const UINT vk = it->second;
