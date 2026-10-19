@@ -74,6 +74,15 @@ jobs:
           set -euo pipefail
           UP="${{ steps.run.outputs.upstream }}"
           SHA="${{ steps.run.outputs.sha }}"
+          # The tag names the upstream version, so the tree must really be that version (src/version.bzl).
+          V=$(python3 - <<'PY'
+          import re
+          t = open("src/version.bzl").read()
+          g = lambda k: re.search(rf"^{k}\s*=\s*(\d+)", t, re.M).group(1)
+          print(f"{g('MAJOR')}.{g('MINOR')}.{g('BUILD_OSS')}")
+          PY
+          )
+          [ "$V" = "$UP" ] || { echo "::error::the built tree is upstream $V but the tag would say $UP"; exit 1; }
           N=1
           while gh release view "v${UP}-readable.${N}" >/dev/null 2>&1; do N=$((N+1)); done
           TAG="v${UP}-readable.${N}"
