@@ -81,7 +81,7 @@ struct TipSharedState {
   uint32_t candidate_category;    // 0 none, 1 SUGGESTION, 2 PREDICTION, 3 CONVERSION
   uint32_t preedit_utf16_len;     // length of the preedit in UTF-16 code units
   uint32_t preedit_cursor;        // UTF-32 code points (Mozc's unit)
-  uint32_t key_seq;               // key-downs seen by OnTestKeyDown/OnPreservedKey
+  uint32_t key_seq;               // key-downs seen by OnTestKeyDown/OnPreservedKey (or OnKeyDown alone)
   uint32_t scope_forced_mode;     // 0 none, else commands::CompositionMode + 1
   uint32_t server_ready;          // 1 once a server response was received
   uint32_t composition_key_seq;   // key_seq of the key that produced the composition fields
@@ -129,7 +129,24 @@ class TipStatePublisher {
 
   // Counts one key-down seen by the TIP (key_seq += 1). Written on every call,
   // never pulses.
-  static void CountKeyDown();
+  // `vk` is remembered as the key that was counted; kAnyKey (a preserved key,
+  // whose VK is known only later) matches every key.
+  static constexpr uint32_t kAnyKey = 0xFFFFFFFFu;
+  static void CountKeyDown(uint32_t vk = kAnyKey);
+
+  // Called from OnKeyDown. If this very key-down was already counted by
+  // CountKeyDown() (OnTestKeyDown ate it, or OnPreservedKey), consumes that
+  // mark and counts nothing. (TipTextService::OnPreservedKey calls
+  // TipKeyeventHandler::OnKeyDown itself, which is why its mark is consumed;
+  // TSF does not call OnKeyDown after OnPreservedKey. Keep that call if you
+  // change OnPreservedKey, or forget the mark with ForgetCountedKeyDown().)
+  // Otherwise the host called OnKeyDown without a
+  // preceding OnTestKeyDown for it (observed in Windows Terminal), so counts it.
+  static void CountKeyDownUnlessCounted(uint32_t vk);
+
+  // Forgets the "already counted" mark: OnTestKeyDown did not eat the key, so
+  // TSF will not call OnKeyDown for it.
+  static void ForgetCountedKeyDown();
 
   // The current key_seq of the calling thread.
   static uint32_t CurrentKeySeq();

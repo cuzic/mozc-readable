@@ -209,6 +209,16 @@ ThreadSlot& CurrentSlot() {
   return slot;
 }
 
+// The VK of the key-down CountKeyDown() counted (kNotCounted: none), consumed by
+// the OnKeyDown that follows the counted OnTestKeyDown/OnPreservedKey. A mark
+// that is never consumed (TSF did not call OnKeyDown) can then only swallow the
+// count of a later key-down of the same key. Per thread, like the slot.
+constexpr uint32_t kNotCounted = 0xFFFFFFFEu;
+uint32_t& CountedVk() {
+  thread_local uint32_t vk = kNotCounted;
+  return vk;
+}
+
 void Pulse() {
   if (HANDLE ev = GetChangeEvent(); ev != nullptr) {
     ::SetEvent(ev);
@@ -263,7 +273,18 @@ void TipStatePublisher::SetComposition(const TipCompositionState& composition) {
   if (slot.published() && slot.Flush().pulse) Pulse();
 }
 
-void TipStatePublisher::CountKeyDown() {
+void TipStatePublisher::CountKeyDownUnlessCounted(uint32_t vk) {
+  uint32_t& counted = CountedVk();
+  const bool already = counted == kAnyKey || counted == vk;
+  counted = kNotCounted;
+  if (!already) CountKeyDown(vk);
+  counted = kNotCounted;
+}
+
+void TipStatePublisher::ForgetCountedKeyDown() { CountedVk() = kNotCounted; }
+
+void TipStatePublisher::CountKeyDown(uint32_t vk) {
+  CountedVk() = vk;
   ThreadSlot& slot = CurrentSlot();
   ++slot.pending().key_seq;
   if (slot.published() && slot.Flush().pulse) Pulse();
