@@ -18,7 +18,8 @@
 # like deactivation, so it runs on a separate runner. When you add a section, change the ValidateSet below
 # and `matrix.section` in .github/workflows/readable-build.yaml together.
 param([Parameter(Mandatory)][string]$Msi,
-      [ValidateSet('all', 'state', 'apps', 'appcontainer', 'config', 'deactivation', 'composition', 'keyleak', 'keyleak-chrome')][string]$Section = 'all')
+      [ValidateSet('all', 'state', 'apps', 'appcontainer', 'config', 'deactivation', 'composition', 'keyleak', 'keyleak-chrome', 'cold')][string]$Section = 'all',
+      [string]$ColdCase = 'on:60')
 $ErrorActionPreference = 'Stop'
 $Clsid   = '{AFC94560-63DA-488E-9227-B04F3EF34B5B}'
 $Profile = '{7D7B9A38-A0A4-4390-9706-509E98A8C791}'
@@ -98,7 +99,7 @@ function Run-Scenario($name, $readerMode, $keys) {
 # key (IME on) was lost on all 3 tries (runs 39099740462 and 39100514498, 'all steps reached' was NO).
 # 'deactivation' has its own scenario and does not need it.
 # 'composition' starts cold on purpose (server_ready, ADR-267 D10).
-if ($Section -notin 'deactivation', 'composition', 'keyleak', 'keyleak-chrome') { $null = Run-Scenario 'warmup' '' 'F2=1:1,19=0:*' }
+if ($Section -notin 'deactivation', 'composition', 'keyleak', 'keyleak-chrome', 'cold') { $null = Run-Scenario 'warmup' '' 'F2=1:1,19=0:*' }
 
 if (Want 'state') {
 $poll = Run-Scenario 'poll' '' $keys
@@ -271,6 +272,29 @@ if (-not $chrome) { Write-Host '::warning::chrome.exe not found on the runner' }
   Get-Content $clOut, "$clOut.err" -ErrorAction SilentlyContinue | Out-Host
   Soft 'chrome_leak_probe.py ran to the end' ($cl.HasExited -and $cl.ExitCode -eq 0) "(exit $($cl.ExitCode))"
   foreach ($line in (Get-Content $clOut -ErrorAction SilentlyContinue)) {
+    if ($line -match '^probe: SOFT (.+) ok=(True|False)') { Soft $Matches[1] ($Matches[2] -eq 'True') }
+  }
+  Get-Process -Name chrome -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+}
+}
+
+if (Want 'cold') {
+Write-Host "== M. cold reproduction in Chrome: cold_probe.py $ColdCase"
+$page = Join-Path $tmp 'leak.html'
+Set-Content $page '<!doctype html><title>t</title><style>html,body{margin:0;height:100%}</style><input id=a autofocus style="position:fixed;left:0;top:0;width:100%;height:100%;box-sizing:border-box;font-size:40px"><script>a.addEventListener("input",function(){document.title="v:"+a.value+"|"})</script>' -Encoding UTF8
+$chrome = @("${env:ProgramFiles}\Google\Chrome\Application\chrome.exe", "${env:ProgramFiles(x86)}\Google\Chrome\Application\chrome.exe") | Where-Object { Test-Path $_ } | Select-Object -First 1
+if (-not $chrome) { Write-Host '::warning::chrome.exe not found on the runner' } else {
+  $udd = Join-Path $tmp 'chrome-profile'
+  $cp = Start-Process $chrome -ArgumentList "--user-data-dir=`"$udd`" --no-first-run --no-default-browser-check --new-window `"file:///$($page -replace '\\','/')`"" -PassThru
+  Start-Sleep -Seconds 6
+  $cdOut = Join-Path $tmp 'cold.out'
+  $cd = Start-Process python -ArgumentList "`"$here\cold_probe.py`" Chrome_WidgetWin_1 `"$ColdCase`"" -PassThru -NoNewWindow -RedirectStandardOutput $cdOut -RedirectStandardError "$cdOut.err"
+  $limit = 300000
+  if ($ColdCase -match ':(\d+)$') { $limit += 2000 * [int]$Matches[1] }
+  if (-not $cd.WaitForExit($limit)) { Write-Host "::warning::cold_probe.py did not finish in $limit ms; killing it"; $cd.Kill() }
+  Get-Content $cdOut, "$cdOut.err" -ErrorAction SilentlyContinue | Out-Host
+  Soft 'cold_probe.py ran to the end' ($cd.HasExited -and $cd.ExitCode -eq 0) "(exit $($cd.ExitCode))"
+  foreach ($line in (Get-Content $cdOut -ErrorAction SilentlyContinue)) {
     if ($line -match '^probe: SOFT (.+) ok=(True|False)') { Soft $Matches[1] ($Matches[2] -eq 'True') }
   }
   Get-Process -Name chrome -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue

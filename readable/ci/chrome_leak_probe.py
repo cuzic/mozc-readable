@@ -318,4 +318,5 @@ def main():
     result("warm: all keys eaten", warm["dkey"] == warm["deaten"] == warm["sent"], f"{warm}")
 
 
-main()
+if __name__ == "__main__":
+    main()

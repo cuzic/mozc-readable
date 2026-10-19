@@ -137,6 +137,15 @@ jobs:
       fail-fast: false
       matrix:
         section: [state, apps, appcontainer, config, deactivation, composition, keyleak, keyleak-chrome]
+        case: ['']
+        include:
+          - {section: cold, case: 'on:60'}
+          - {section: cold, case: 'on:300'}
+          - {section: cold, case: 'off:60'}
+          - {section: cold, case: 'off:300'}
+          - {section: cold, case: 'away:60'}
+          - {section: cold, case: 'away:300'}
+          - {section: cold, case: 'kill'}
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -152,13 +161,13 @@ jobs:
 
       - name: Verify (${{ matrix.section }})
         shell: pwsh
-        run: ./readable/ci/verify.ps1 -Msi "${{ github.workspace }}\msi\Mozc64.msi" -Section ${{ matrix.section }}
+        run: ./readable/ci/verify.ps1 -Msi "${{ github.workspace }}\msi\Mozc64.msi" -Section ${{ matrix.section }} -ColdCase "${{ matrix.case }}"
 
       - name: Upload install log
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
-          name: verify-install-log-${{ matrix.section }}
+          name: verify-install-log-${{ matrix.section }}-${{ strategy.job-index }}
           path: install.log
           if-no-files-found: ignore
 
@@ -171,6 +180,6 @@ jobs:
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
-          name: verify-uninstall-log-${{ matrix.section }}
+          name: verify-uninstall-log-${{ matrix.section }}-${{ strategy.job-index }}
           path: uninstall.log
           if-no-files-found: ignore
