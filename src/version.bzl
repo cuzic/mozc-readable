@@ -38,7 +38,14 @@ BUILD_OSS = 6354
 BUILD = BUILD_OSS
 
 # Represent the platform and release channel.
-REVISION = 100
+# mozc-readable: Windows Installer compares only the first three fields of
+# ProductVersion, and installs the new files before removing the old product, so
+# a file whose version did not rise is not replaced (v3.34.6239-readable.2 over
+# .1 left the old DLLs). Raise REVISION by 10 for every release: the Windows
+# build replaces the last digit with 0, and the hundreds digit must stay 1
+# (dev channel), so the usable values are 100, 110, ... 190.
+#   readable.1/.2: 100, readable.3: 110, readable.4: 120, ...
+REVISION = 110
 
 # LINT.IfChange
 DEFAULT_BUILD_LABEL_MACOS = "%d.%d.%d.%d" % (MAJOR, MINOR, BUILD, REVISION + 1)

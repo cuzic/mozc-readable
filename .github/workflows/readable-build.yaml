@@ -174,3 +174,36 @@ jobs:
           name: verify-uninstall-log-${{ matrix.section }}
           path: uninstall.log
           if-no-files-found: ignore
+
+  verify_upgrade:
+    # A plain `msiexec /i` of this MSI over the previous release must replace the files (v3.34.6239-readable.2 over
+    # .1 did not: the file version had not risen). Its own runner: installing is global to the session.
+    needs: build_on_x64
+    runs-on: windows-2025
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          submodules: false
+          persist-credentials: false
+
+      - name: Download MSI
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
+        with:
+          name: Mozc64_x64.msi
+          path: msi
+
+      - name: Upgrade over the previous release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: ./readable/ci/upgrade.ps1 -NewMsi "${{ github.workspace }}\msi\Mozc64.msi" -OldTag v3.34.6239-readable.2
+
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: verify-upgrade-logs
+          path: upgrade-*.log
+          if-no-files-found: ignore
