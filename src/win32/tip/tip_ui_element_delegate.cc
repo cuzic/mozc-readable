@@ -52,6 +52,7 @@
 #include "win32/tip/tip_edit_session.h"
 #include "win32/tip/tip_private_context.h"
 #include "win32/tip/tip_resource.h"
+#include "win32/tip/tip_state_publisher.h"
 #include "win32/tip/tip_text_service.h"
 
 namespace mozc {
@@ -423,6 +424,7 @@ class TipUiElementDelegateImpl final : public TipUiElementDelegate {
   HRESULT Finalize() override {
     DCHECK(IsCandidateWindowLike());
 
+    TipStatePublisher::CountSubmit(TipSubmitCause::kOther);
     if (!TipEditSession::SubmitAsync(text_service_.get(), context_.get())) {
       return E_FAIL;
     }
@@ -433,6 +435,7 @@ class TipUiElementDelegateImpl final : public TipUiElementDelegate {
     DCHECK(IsCandidateWindowLike());
 
     // Currently equals to Finalize().
+    TipStatePublisher::CountSubmit(TipSubmitCause::kOther);
     if (!TipEditSession::SubmitAsync(text_service_.get(), context_.get())) {
       return E_FAIL;
     }

@@ -75,11 +75,27 @@ struct Snapshot {
   uint32_t scope_forced_mode = 0;
   uint32_t server_ready = 0;
   uint32_t composition_key_seq = 0;
+  // Version 4 (never part of SameState: they do not pulse).
+  uint32_t composition_start_count = 0;
+  uint32_t submit_end_edit_count = 0;
+  uint32_t submit_terminated_count = 0;
+  uint32_t revert_count = 0;
+  uint32_t submit_other_count = 0;
+  uint32_t edit_session_fail_count = 0;
+  uint32_t diag_flags = 0;
+  uint32_t update_context_id = 0;
   // "Is there anything to write": every published field.
   bool operator==(const Snapshot& o) const {
     return SameState(o) && preedit_utf16_len == o.preedit_utf16_len &&
            preedit_cursor == o.preedit_cursor && key_seq == o.key_seq &&
-           composition_key_seq == o.composition_key_seq;
+           composition_key_seq == o.composition_key_seq &&
+           composition_start_count == o.composition_start_count &&
+           submit_end_edit_count == o.submit_end_edit_count &&
+           submit_terminated_count == o.submit_terminated_count &&
+           revert_count == o.revert_count &&
+           submit_other_count == o.submit_other_count &&
+           edit_session_fail_count == o.edit_session_fail_count &&
+           diag_flags == o.diag_flags && update_context_id == o.update_context_id;
   }
   // "Should the change event be pulsed": the state fields only. Changes of
   // preedit_utf16_len, preedit_cursor, key_seq and composition_key_seq alone
@@ -132,7 +148,7 @@ class ThreadSlot {
     s->tsf_mode = pending_.tsf_mode;
     s->active = pending_.active;
     s->update_tick_ms = ::GetTickCount64();
-    if (size_ >= sizeof(TipSharedState)) {
+    if (size_ >= kTipSharedStateV3Size) {
       // An older, 48 byte block is never touched beyond its end (ADR-267 D9).
       s->phase = pending_.phase;
       s->candidate_category = pending_.candidate_category;
@@ -142,6 +158,17 @@ class ThreadSlot {
       s->scope_forced_mode = pending_.scope_forced_mode;
       s->server_ready = pending_.server_ready;
       s->composition_key_seq = pending_.composition_key_seq;
+    }
+    if (size_ >= sizeof(TipSharedState)) {
+      // Likewise an 80 byte (version 3) block is never touched beyond its end.
+      s->composition_start_count = pending_.composition_start_count;
+      s->submit_end_edit_count = pending_.submit_end_edit_count;
+      s->submit_terminated_count = pending_.submit_terminated_count;
+      s->revert_count = pending_.revert_count;
+      s->submit_other_count = pending_.submit_other_count;
+      s->edit_session_fail_count = pending_.edit_session_fail_count;
+      s->diag_flags = pending_.diag_flags;
+      s->update_context_id = pending_.update_context_id;
     }
     ::InterlockedIncrement(seq);  // even: stable (full barrier)
     last_ = pending_;
@@ -170,10 +197,14 @@ class ThreadSlot {
     size_ = sizeof(TipSharedState);
     void* view = ::MapViewOfFile(mapping_, FILE_MAP_WRITE, 0, 0, size_);
     if (view == nullptr && existed) {
-      // A section left by an older DLL has the version 2 size. Write version 2
-      // into it (ADR-267 D9).
-      size_ = kTipSharedStateV2Size;
+      // A section left by an older DLL has the version 3 size (80), or the
+      // version 2 size (48). Write that version into it (ADR-267 D9).
+      size_ = kTipSharedStateV3Size;
       view = ::MapViewOfFile(mapping_, FILE_MAP_WRITE, 0, 0, size_);
+      if (view == nullptr) {
+        size_ = kTipSharedStateV2Size;
+        view = ::MapViewOfFile(mapping_, FILE_MAP_WRITE, 0, 0, size_);
+      }
     }
     if (view == nullptr) {
       ::CloseHandle(mapping_);
@@ -185,9 +216,10 @@ class ThreadSlot {
     // The block is zero-filled. seq == 0 means "not published yet"; `magic` is
     // written last so a reader that checks it never sees a half-initialized header.
     // `Get()` writes the version unconditionally, so a 48 byte block must be
-    // labelled 2 or a reader would map 80 bytes of it.
-    state_->version =
-        size_ >= sizeof(TipSharedState) ? kTipSharedStateVersion : 2;
+    // labelled 2 and an 80 byte block 3, or a reader would map more than there is.
+    state_->version = size_ >= sizeof(TipSharedState) ? kTipSharedStateVersion
+                      : size_ >= kTipSharedStateV3Size ? 3
+                                                       : 2;
     state_->thread_id = tid;
     state_->process_id = ::GetCurrentProcessId();
     ::MemoryBarrier();
@@ -197,7 +229,7 @@ class ThreadSlot {
 
   HANDLE mapping_ = nullptr;
   TipSharedState* state_ = nullptr;
-  size_t size_ = 0;  // mapped (and writable) size: 80, or 48 for an old block
+  size_t size_ = 0;  // mapped (and writable) size: 112, or 80 / 48 for an old block
   bool tried_ = false;
   bool published_ = false;
   Snapshot pending_;
@@ -260,6 +292,7 @@ void TipStatePublisher::SetActive(bool active) {
 void TipStatePublisher::SetComposition(const TipCompositionState& composition) {
   ThreadSlot& slot = CurrentSlot();
   Snapshot& p = slot.pending();
+  if (p.phase == 0 && composition.phase != 0) ++p.composition_start_count;
   p.phase = composition.phase;
   p.candidate_category = composition.candidate_category;
   p.preedit_utf16_len = composition.preedit_utf16_len;
@@ -291,6 +324,56 @@ void TipStatePublisher::CountKeyDown() {
 
 uint32_t TipStatePublisher::CurrentKeySeq() {
   return CurrentSlot().pending().key_seq;
+}
+
+namespace {
+// Writes a version 4 diagnostic that changed. Never pulses (ADR-267 D6); before
+// the first Publish() the value waits in `pending_` for that first write.
+void FlushDiagnostic(ThreadSlot& slot) {
+  if (slot.published()) slot.Flush();
+}
+}  // namespace
+
+void TipStatePublisher::CountSubmit(TipSubmitCause cause) {
+  ThreadSlot& slot = CurrentSlot();
+  Snapshot& p = slot.pending();
+  switch (cause) {
+    case TipSubmitCause::kEndEdit:
+      ++p.submit_end_edit_count;
+      break;
+    case TipSubmitCause::kTerminated:
+      ++p.submit_terminated_count;
+      break;
+    case TipSubmitCause::kRevert:
+      ++p.revert_count;
+      break;
+    case TipSubmitCause::kOther:
+      ++p.submit_other_count;
+      break;
+  }
+  FlushDiagnostic(slot);
+}
+
+void TipStatePublisher::CountEditSessionFailure() {
+  ThreadSlot& slot = CurrentSlot();
+  ++slot.pending().edit_session_fail_count;
+  FlushDiagnostic(slot);
+}
+
+void TipStatePublisher::SetAsyncLockInKeyHandler(bool value) {
+  ThreadSlot& slot = CurrentSlot();
+  uint32_t& flags = slot.pending().diag_flags;
+  flags = value ? (flags | 1u) : (flags & ~1u);
+  FlushDiagnostic(slot);
+}
+
+void TipStatePublisher::SetUpdateInfo(uint32_t context_id,
+                                      bool last_output_is_test) {
+  ThreadSlot& slot = CurrentSlot();
+  Snapshot& p = slot.pending();
+  p.update_context_id = context_id;
+  p.diag_flags = last_output_is_test ? (p.diag_flags | 2u) : (p.diag_flags & ~2u);
+  FlushDiagnostic(slot);
 }
 
 void TipStatePublisher::SetServerReady(bool ready) {

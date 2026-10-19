@@ -55,6 +55,7 @@
 #include "win32/tip/tip_input_mode_manager.h"
 #include "win32/tip/tip_private_context.h"
 #include "win32/tip/tip_range_util.h"
+#include "win32/tip/tip_state_publisher.h"
 #include "win32/tip/tip_status.h"
 #include "win32/tip/tip_text_service.h"
 #include "win32/tip/tip_thread_context.h"
@@ -561,6 +562,7 @@ HRESULT OnEndEditImpl(TipTextService* text_service, ITfContext* context,
       // ITfTextEditSink::OnEndEdit and some operations (e.g.,
       // ITfComposition::EndComposition) result in failure in this edit
       // session.
+      TipStatePublisher::CountSubmit(TipSubmitCause::kEndEdit);
       result = TipEditSession::SubmitAsync(text_service, context);
       if (FAILED(result)) {
         return result;
@@ -586,6 +588,7 @@ HRESULT OnEndEditImpl(TipTextService* text_service, ITfContext* context,
     // the application and Mozc server because we are already in
     // ITfTextEditSink::OnEndEdit and some operations (e.g.,
     // ITfComposition::EndComposition) result in failure in this edit session.
+    TipStatePublisher::CountSubmit(TipSubmitCause::kRevert);
     result = TipEditSession::CancelCompositionAsync(text_service, context);
     *update_ui = false;
     if (FAILED(result)) {
@@ -637,6 +640,7 @@ HRESULT TipEditSessionImpl::OnCompositionTerminated(
   if (private_context == nullptr) {
     return E_FAIL;
   }
+  TipStatePublisher::CountSubmit(TipSubmitCause::kTerminated);
   if (!private_context->GetClient()->SendCommand(command, &output)) {
     return E_FAIL;
   }
