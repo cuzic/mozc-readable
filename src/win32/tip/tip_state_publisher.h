@@ -136,7 +136,11 @@ class TipStatePublisher {
 
   // Called from OnKeyDown. If this very key-down was already counted by
   // CountKeyDown() (OnTestKeyDown ate it, or OnPreservedKey), consumes that
-  // mark and counts nothing. Otherwise the host called OnKeyDown without a
+  // mark and counts nothing. (TipTextService::OnPreservedKey calls
+  // TipKeyeventHandler::OnKeyDown itself, which is why its mark is consumed;
+  // TSF does not call OnKeyDown after OnPreservedKey. Keep that call if you
+  // change OnPreservedKey, or forget the mark with ForgetCountedKeyDown().)
+  // Otherwise the host called OnKeyDown without a
   // preceding OnTestKeyDown for it (observed in Windows Terminal), so counts it.
   static void CountKeyDownUnlessCounted(uint32_t vk);
 
