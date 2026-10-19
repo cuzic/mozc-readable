@@ -44,9 +44,11 @@ k32.OpenEventW.argtypes = [wt.DWORD, wt.BOOL, wt.LPCWSTR]
 k32.WaitForSingleObject.argtypes = [wt.HANDLE, wt.DWORD]
 WNDPROC = ctypes.WINFUNCTYPE(ctypes.c_ssize_t, wt.HWND, wt.UINT, wt.WPARAM, wt.LPARAM)
 
-FMT = "<10IQ8I"  # TipSharedState version 3, 80 bytes
-NAMES = ("magic version seq eo em to tm tid pid active tick phase cat plen pcur key_seq sfm srv cks").split()
-assert struct.calcsize(FMT) == 80 and len(NAMES) == 19
+FMT = "<10IQ16I"  # TipSharedState version 4, 112 bytes (offsets 0..79 are version 3)
+NAMES = ("magic version seq eo em to tm tid pid active tick phase cat plen pcur key_seq sfm srv cks "
+         "csc sub_ee sub_term revert sub_other esf flags ctx").split()
+assert struct.calcsize(FMT) == 112 and len(NAMES) == 27
+V4_COUNTERS = ("csc", "sub_ee", "sub_term", "revert", "sub_other", "esf")
 
 class GUID(ctypes.Structure):
     _fields_ = [("d1", wt.DWORD), ("d2", wt.WORD), ("d3", wt.WORD), ("d4", ctypes.c_ubyte * 8)]
@@ -144,7 +146,7 @@ def read(tid):
     if not _view:
         return None
     for _ in range(100):
-        a = struct.unpack(FMT, ctypes.string_at(_view, 80))
+        a = struct.unpack(FMT, ctypes.string_at(_view, 112))
         if a[2] % 2:
             continue
         if a[2] == struct.unpack("<I", ctypes.string_at(_view + 8, 4))[0]:
@@ -245,7 +247,7 @@ def main():
 
     s = p.st()
     print(f"probe: info initial {fmt(s)}", flush=True)
-    result("HARD", "block is version 3 (80 bytes) from this thread", s is not None and s["version"] == 3, fmt(s))
+    result("HARD", "block is version 4 (112 bytes) from this thread", s is not None and s["version"] == 4, fmt(s))
     if s is None or s["version"] < 3:
         sys.exit(1)
 
@@ -297,10 +299,13 @@ def main():
     s = p.settle(s["key_seq"], lambda s: s["phase"] == 0, 5)
 
     # ---- phase / candidate_category / preedit: k -> ka -> Space -> Enter
+    c0 = p.st() or {k: 0 for k in NAMES}
     s, d = p.press(0x4B)  # K
     k_after = s["key_seq"]
     s = p.settle(k_after, lambda s: s["phase"] == 1)
     result("HARD", "phase=1 right after 'k' (composing)", s and s["phase"] == 1, f"delta={d} {fmt(s)}")
+    result("HARD", "composition_start_count +1 when 'k' starts a composition (version 4)",
+           s and i32(s["csc"] - c0["csc"]) == 1, f"before={c0['csc']} after={s['csc'] if s else None}")
     print(f"probe: info after k: plen={s['plen'] if s else None} pcur={s['pcur'] if s else None} cat={s['cat'] if s else None}", flush=True)
     result("SOFT", "preedit_utf16_len=1 and cursor=1 after 'k'", s and s["plen"] == 1 and s["pcur"] == 1, fmt(s))
 
@@ -322,6 +327,8 @@ def main():
         s, d = p.press(VK_SPACE)
         s = p.settle(s["key_seq"], lambda s: True)
         print(f"probe: info candidate_category after Space #{n}: {s['cat'] if s else None} phase={s['phase'] if s else None}", flush=True)
+    result("HARD", "composition_start_count did not move for 'a'/Space (the composition was already running)",
+           s and i32(s["csc"] - c0["csc"]) == 1, f"before={c0['csc']} now={s['csc'] if s else None}")
     result("SOFT", "candidate_category=CONVERSION(3) within 3 Space presses", s and s["cat"] == 3, fmt(s))
 
     s, d = p.press(VK_BACK)  # BackSpace while converting: observation (R2-M3)
@@ -373,6 +380,15 @@ def main():
           flush=True)
     result("SOFT", "fast typing: fewer pulses than keys (preedit/key_seq changes do not pulse)", p.pulses - pulses0 < len(letters),
            f"pulses={p.pulses - pulses0} keys={len(letters)}")
+    # Plain EDIT, before any focus move: nothing ended the composition behind the TIP's back.
+    s = p.st()
+    plain = {k: s[k] for k in V4_COUNTERS}
+    print(f"probe: info version 4 counters in the plain EDIT: {plain} flags={s['flags']:#x} ctx={s['ctx']:#x}", flush=True)
+    result("SOFT", "no SUBMIT/REVERT was requested and no edit session failed in a plain EDIT (counters 0)",
+           s["sub_ee"] == 0 and s["sub_term"] == 0 and s["revert"] == 0 and s["esf"] == 0,
+           " ".join(f"{k}={s[k]}" for k in V4_COUNTERS))
+    result("SOFT", "update_context_id is set and the sticky last_output_is_test / use_async_lock flags are 0",
+           s["ctx"] != 0 and s["flags"] & 3 == 0, f"flags={s['flags']:#x} ctx={s['ctx']:#x}")
     # Context change in the middle of a composition: focus the other EDIT and look (D9, observation).
     p.focus(num)
     pump(1.0)
@@ -385,6 +401,14 @@ def main():
     s, d = p.press(VK_ESCAPE)
     s = p.settle(s["key_seq"], lambda s: s["phase"] == 0, 5)
     result("SOFT", "back to phase=0 after Esc", s and s["phase"] == 0, fmt(s))
+
+    # ---- version 4 diagnostics after the focus move: the app ended the composition, the TIP submitted it.
+    s = p.st()
+    print(f"probe: info version 4 counters now: { {k: s[k] for k in V4_COUNTERS} }", flush=True)
+    result("SOFT", "moving focus mid-composition shows up as a SUBMIT counter (sub_term/sub_ee) or nothing; no edit session failed",
+           s["esf"] == 0, " ".join(f"{k}={s[k]}" for k in V4_COUNTERS))
+    result("HARD", "the version 4 counters never went backwards since the start of the composition checks",
+           all(i32(s[k] - c0[k]) >= 0 for k in V4_COUNTERS), " ".join(f"{k}:{c0[k]}->{s[k]}" for k in V4_COUNTERS))
 
     # ---- scope_forced_mode (D8): observation of what the EDIT input scopes produce.
     print(f"probe: info scope_forced_mode in the plain EDIT: {p.st()['sfm']}", flush=True)

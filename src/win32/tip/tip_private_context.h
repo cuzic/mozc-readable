@@ -74,6 +74,10 @@ class TipPrivateContext {
   // response is `last_output()`. Outputs that no key produced keep the
   // previous value.
   uint32_t last_output_key_seq() const;
+  // A number that is unique per TipPrivateContext in this process (mozc-readable,
+  // ADR-267 version 4 `update_context_id`). Not an address, so it neither leaks
+  // heap layout to other processes nor repeats after a context is freed.
+  uint32_t serial() const;
   void set_last_output_key_seq(uint32_t key_seq);
   // True while `last_output()` is a TEST_SEND_KEY response (OnTest), which is
   // not the result of the server processing the key.

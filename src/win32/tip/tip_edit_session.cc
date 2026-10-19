@@ -56,6 +56,7 @@
 #include "win32/tip/tip_input_mode_manager.h"
 #include "win32/tip/tip_private_context.h"
 #include "win32/tip/tip_range_util.h"
+#include "win32/tip/tip_state_publisher.h"
 #include "win32/tip/tip_status.h"
 #include "win32/tip/tip_surrounding_text.h"
 #include "win32/tip/tip_text_service.h"
@@ -66,6 +67,14 @@ namespace mozc {
 namespace win32 {
 namespace tsf {
 namespace {
+
+// mozc-readable (ADR-267 version 4): the result of RequestEditSession, counting
+// a failure in the shared memory.
+bool RequestSucceeded(HRESULT hr, HRESULT edit_session_result) {
+  const bool ok = SUCCEEDED(hr) && SUCCEEDED(edit_session_result);
+  if (!ok) TipStatePublisher::CountEditSessionFailure();
+  return ok;
+}
 
 using ::mozc::commands::CandidateWindow;
 using ::mozc::commands::DeletionRange;
@@ -120,7 +129,7 @@ bool OnLayoutChangedAsyncImpl(TipTextService* text_service,
   const HRESULT hr = context->RequestEditSession(
       text_service->GetClientID(), edit_session.get(),
       TF_ES_ASYNCDONTCARE | TF_ES_READ, &edit_session_result);
-  return SUCCEEDED(hr) && SUCCEEDED(edit_session_result);
+  return RequestSucceeded(hr, edit_session_result);
 }
 
 // This class is an implementation class for the ITfEditSession classes, which
@@ -259,7 +268,7 @@ bool OnSwitchInputModeAsync(TipTextService* text_service, ITfContext* context,
   const HRESULT hr = context->RequestEditSession(
       text_service->GetClientID(), edit_session.get(),
       TF_ES_ASYNCDONTCARE | TF_ES_READWRITE, &edit_session_result);
-  return SUCCEEDED(hr) && SUCCEEDED(edit_session_result);
+  return RequestSucceeded(hr, edit_session_result);
 }
 
 // This class is an implementation class for the ITfEditSession classes, which
@@ -308,7 +317,7 @@ bool OnSessionCommandAsync(TipTextService* text_service, ITfContext* context,
   const HRESULT hr = context->RequestEditSession(
       text_service->GetClientID(), edit_session.get(),
       TF_ES_ASYNCDONTCARE | TF_ES_READWRITE, &edit_session_result);
-  return SUCCEEDED(hr) && SUCCEEDED(edit_session_result);
+  return RequestSucceeded(hr, edit_session_result);
 }
 
 bool TurnOnImeAndTryToReconvertFromIme(TipTextService* text_service,
@@ -552,9 +561,10 @@ bool OnOutputReceivedImpl(TipTextService* text_service, ITfContext* context,
     // See https://github.com/google/mozc/issues/819 for details.
     // TODO(https://github.com/google/mozc/issues/821): Remove this workaround.
     thread_context->set_use_async_lock_in_key_handler(true);
+    TipStatePublisher::SetAsyncLockInKeyHandler(true);
   }
 
-  return SUCCEEDED(hr) && SUCCEEDED(edit_session_result);
+  return RequestSucceeded(hr, edit_session_result);
 }
 
 // This class is an implementation class for the ITfEditSession classes, which
@@ -670,7 +680,7 @@ bool TipEditSession::OnSetFocusAsync(TipTextService* text_service,
   const HRESULT hr = context->RequestEditSession(
       text_service->GetClientID(), edit_session.get(),
       TF_ES_ASYNCDONTCARE | TF_ES_READ, &edit_session_result);
-  return SUCCEEDED(hr) && SUCCEEDED(edit_session_result);
+  return RequestSucceeded(hr, edit_session_result);
 }
 
 bool TipEditSession::OnModeChangedAsync(TipTextService* text_service) {
