@@ -50,6 +50,41 @@ NAMES = ("magic version seq eo em to tm tid pid active tick phase cat plen pcur 
 assert struct.calcsize(FMT) == 112 and len(NAMES) == 27
 V4_COUNTERS = ("csc", "sub_ee", "sub_term", "revert", "sub_other", "esf")
 
+class GUID(ctypes.Structure):
+    _fields_ = [("d1", wt.DWORD), ("d2", wt.WORD), ("d3", wt.WORD), ("d4", ctypes.c_ubyte * 8)]
+
+
+IID_ITfKeystrokeMgr = GUID.from_buffer_copy(__import__("uuid").UUID("AA80E7F0-2021-11D2-93E0-0060B067B86E").bytes_le)
+
+
+def tsf_keydown_only(vk):
+    """ITfKeystrokeMgr::KeyDown(vk) on this thread's thread manager WITHOUT a TestKeyDown first (a host such as
+    Windows Terminal). Returns (hr_of_the_call, eaten) or (reason, None). Used to exercise TipKeyeventHandler::OnKeyDown alone."""
+    tm = ctypes.c_void_p()
+    hr = ctypes.windll.msctf.TF_GetThreadMgr(ctypes.byref(tm))
+    if hr != 0 or not tm.value:
+        return f"TF_GetThreadMgr hr={hr:#x}", None
+
+    def slot(obj, idx, proto):
+        table = ctypes.cast(ctypes.cast(obj, ctypes.POINTER(ctypes.c_void_p))[0], ctypes.POINTER(ctypes.c_void_p))
+        return proto(table[idx])
+
+    qi = ctypes.WINFUNCTYPE(ctypes.c_long, ctypes.c_void_p, ctypes.POINTER(GUID), ctypes.POINTER(ctypes.c_void_p))
+    release = ctypes.WINFUNCTYPE(ctypes.c_ulong, ctypes.c_void_p)
+    ks = ctypes.c_void_p()
+    hr = slot(tm, 0, qi)(tm, ctypes.byref(IID_ITfKeystrokeMgr), ctypes.byref(ks))
+    if hr != 0 or not ks.value:
+        slot(tm, 2, release)(tm)
+        return f"QueryInterface(ITfKeystrokeMgr) hr={hr & 0xFFFFFFFF:#x}", None
+    key_down = ctypes.WINFUNCTYPE(ctypes.c_long, ctypes.c_void_p, wt.WPARAM, wt.LPARAM, ctypes.POINTER(wt.BOOL))
+    eaten = wt.BOOL(0)
+    scan = ctypes.windll.user32.MapVirtualKeyW(vk, 0)
+    hr = slot(ks, 8, key_down)(ks, vk, 1 | (scan << 16), ctypes.byref(eaten))
+    slot(ks, 2, release)(ks)
+    slot(tm, 2, release)(tm)
+    return hr & 0xFFFFFFFF, bool(eaten.value)
+
+
 VK_F2, VK_KANJI, VK_SPACE, VK_RETURN, VK_BACK, VK_ESCAPE = 0xF2, 0x19, 0x20, 0x0D, 0x08, 0x1B
 
 
@@ -244,6 +279,24 @@ def main():
     result("HARD", "key_seq advances by exactly 1 for a key-down that changes no state (F2 again)", delta == 1,
            f"delta={delta} pulses_during={p.pulses - pulses0}")
     result("SOFT", "no pulse for a key that changes no state", p.pulses - pulses0 == 0, f"pulses={p.pulses - pulses0}")
+
+    # ---- OnKeyDown alone (no TestKeyDown first), as a host such as Windows Terminal calls it. Observation + SOFT:
+    # whether msctf's KeyDown calls OnTestKeyDown itself is exactly what this shows (key_seq moves by 1 either way;
+    # without the OnKeyDown counting of PR #8 it would move by 0 when msctf does not).
+    s0 = p.st()
+    p.focus()
+    res, eaten = tsf_keydown_only(0x4B)  # K
+    pump(0.3)
+    s1 = p.st()
+    d = i32(s1["key_seq"] - s0["key_seq"]) if s1 and s0 else None
+    print(f"probe: info ITfKeystrokeMgr::KeyDown('k') without TestKeyDown: result={res} eaten={eaten} key_seq_delta={d} {fmt(s1)}",
+          flush=True)
+    result("SOFT", "KeyDown without TestKeyDown: key_seq advances by exactly 1 (OnKeyDown counts it, no double count)",
+           eaten is not None and d == 1, f"result={res} eaten={eaten} delta={d}")
+    result("SOFT", "KeyDown without TestKeyDown: composition_key_seq is that key (not ahead of key_seq, phase=1)",
+           s1 and eaten and s1["phase"] == 1 and i32(s1["cks"] - s1["key_seq"]) == 0, fmt(s1))
+    s, d = p.press(VK_ESCAPE)
+    s = p.settle(s["key_seq"], lambda s: s["phase"] == 0, 5)
 
     # ---- phase / candidate_category / preedit: k -> ka -> Space -> Enter
     c0 = p.st()
