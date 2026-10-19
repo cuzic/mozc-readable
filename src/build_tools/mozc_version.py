@@ -137,7 +137,9 @@ def _ParseVersionTemplateFile(
         template_dict[var] = val
 
   if channel == 'dev':
-    revision = '100'
+    # mozc-readable: the dev channel used to force 100, so REVISION in version.bzl
+    # (raised per release, see there) never reached the file version.
+    revision = template_dict.get('REVISION', '100')
   elif channel == 'stable':
     revision = '0'
   else:  # 'default'
