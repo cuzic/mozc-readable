@@ -241,14 +241,40 @@ ThreadSlot& CurrentSlot() {
   return slot;
 }
 
-// The VK of the key-down CountKeyDown() counted (kNotCounted: none), consumed by
-// the OnKeyDown that follows the counted OnTestKeyDown/OnPreservedKey. A mark
-// that is never consumed (TSF did not call OnKeyDown) can then only swallow the
-// count of a later key-down of the same key. Per thread, like the slot.
-constexpr uint32_t kNotCounted = 0xFFFFFFFEu;
-uint32_t& CountedVk() {
-  thread_local uint32_t vk = kNotCounted;
-  return vk;
+// The VKs of the key-downs CountKeyDown() counted, oldest first, that no
+// OnKeyDown has consumed yet. A host may call TestKeyDown(A), TestKeyDown(B) and
+// only then KeyDown(A), KeyDown(B), so a single mark would count 4 for 2 keys.
+// A mark that is never consumed (TSF did not call OnKeyDown) can then only
+// swallow the count of a later key-down of the same key. Per thread, like the slot.
+struct CountedKeys {
+  static constexpr size_t kCapacity = 8;
+  uint32_t vks[kCapacity];
+  size_t size = 0;
+  void Push(uint32_t vk) {
+    if (size == kCapacity) {  // drop the oldest
+      for (size_t i = 1; i < kCapacity; ++i) vks[i - 1] = vks[i];
+      --size;
+    }
+    vks[size++] = vk;
+  }
+  // Removes the oldest mark that `vk` matches (kAnyKey matches every key).
+  bool Consume(uint32_t vk) {
+    for (size_t i = 0; i < size; ++i) {
+      if (vks[i] == TipStatePublisher::kAnyKey || vks[i] == vk) {
+        for (size_t j = i + 1; j < size; ++j) vks[j - 1] = vks[j];
+        --size;
+        return true;
+      }
+    }
+    return false;
+  }
+  void PopNewest() {
+    if (size > 0) --size;
+  }
+};
+CountedKeys& Counted() {
+  thread_local CountedKeys counted;
+  return counted;
 }
 
 void Pulse() {
@@ -309,21 +335,23 @@ void TipStatePublisher::SetComposition(const TipCompositionState& composition) {
   if (slot.published() && slot.Flush().pulse) Pulse();
 }
 
-void TipStatePublisher::CountKeyDownUnlessCounted(uint32_t vk) {
-  uint32_t& counted = CountedVk();
-  const bool already = counted == kAnyKey || counted == vk;
-  counted = kNotCounted;
-  if (!already) CountKeyDown(vk);
-  counted = kNotCounted;
-}
-
-void TipStatePublisher::ForgetCountedKeyDown() { CountedVk() = kNotCounted; }
-
-void TipStatePublisher::CountKeyDown(uint32_t vk) {
-  CountedVk() = vk;
+namespace {
+void BumpKeySeq() {
   ThreadSlot& slot = CurrentSlot();
   ++slot.pending().key_seq;
   if (slot.published() && slot.Flush().pulse) Pulse();
+}
+}  // namespace
+
+void TipStatePublisher::CountKeyDownUnlessCounted(uint32_t vk) {
+  if (!Counted().Consume(vk)) BumpKeySeq();
+}
+
+void TipStatePublisher::ForgetCountedKeyDown() { Counted().PopNewest(); }
+
+void TipStatePublisher::CountKeyDown(uint32_t vk) {
+  Counted().Push(vk);
+  BumpKeySeq();
 }
 
 uint32_t TipStatePublisher::CurrentKeySeq() {

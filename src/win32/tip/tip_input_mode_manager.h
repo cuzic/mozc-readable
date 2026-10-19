@@ -128,6 +128,11 @@ class TipInputModeManager : public TipInputModeManagerImpl {
   // Returns IME conversion mode that is visible from TSF.
   commands::CompositionMode GetTsfConversionMode() const;
 
+  // Publishes the current state to the shared memory (mozc-readable). Called
+  // once at the end of a successful activation, with the state of the new
+  // thread context, before `active` is set.
+  void PublishCurrentState() const { PublishState(); }
+
  private:
   // mozc-readable: publishes the resulting state to shared memory when a
   // mutating member function returns.

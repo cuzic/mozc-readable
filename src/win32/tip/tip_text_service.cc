@@ -507,8 +507,10 @@ class TipTextServiceImpl
     }
     thread_context_ = std::make_unique<TipThreadContext>();
     StorePointerForCurrentThread(this);
-    // mozc-readable: tell readers of the shared state that this TIP is live on the thread.
-    TipStatePublisher::SetActive(true);
+    // mozc-readable: start from "not active" (this also drops the composition
+    // fields and the async-lock mirror of a previous activation). `active` is set
+    // at the end of a successful activation, once the real state is published.
+    TipStatePublisher::SetActive(false);
 
     HRESULT result = E_UNEXPECTED;
 
@@ -650,6 +652,11 @@ class TipTextServiceImpl
       }
     }
 
+    // mozc-readable: tell readers of the shared state that this TIP is live on
+    // the thread. Not earlier: a failed activation must not leave active=1, and
+    // the state published with it must be the real one, not a previous one.
+    GetThreadContext()->GetInputModeManager()->PublishCurrentState();
+    TipStatePublisher::SetActive(true);
     return result;
   }
 
