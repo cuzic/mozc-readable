@@ -55,6 +55,20 @@ Check 'official Mozc CLSID not registered' (-not (Test-Path "Registry::HKEY_LOCA
 Check 'TSF TIP key present' (Test-Path "Registry::HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\CTF\TIP\$Clsid")
 Check 'TSF ja-JP profile present' (Test-Path "Registry::HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\CTF\TIP\$Clsid\LanguageProfile\0x00000411\$Profile")
 
+# The display name Windows shows (Win+Space, language settings) is resolved from "@<dll>,-<id>" with
+# SHLoadIndirectString. mozc-readable moved it to resource ID 202 (a changed text under the old ID is
+# not picked up on an update because of the MUI cache). An update install over an older MSI is NOT tested here.
+Add-Type -Namespace Native -Name Shlwapi -MemberDefinition @'
+[System.Runtime.InteropServices.DllImport("shlwapi.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode)]
+public static extern int SHLoadIndirectString(string pszSource, System.Text.StringBuilder pszOutBuf, uint cchOutBuf, System.IntPtr ppvReserved);
+'@
+$prof = Get-ItemProperty "Registry::HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\CTF\TIP\$Clsid\LanguageProfile\0x00000411\$Profile" -ErrorAction SilentlyContinue
+$prof.PSObject.Properties | Where-Object { $_.Name -notlike 'PS*' } | ForEach-Object { Write-Host "  profile value $($_.Name) = $($_.Value)" }
+$dd = $prof.'Display Description'
+$sb = New-Object System.Text.StringBuilder 260
+$hr = if ($dd) { [Native.Shlwapi]::SHLoadIndirectString($dd, $sb, 260, [IntPtr]::Zero) } else { -1 }
+Check 'profile display name resolves to "Mozc Readable" (resource ID 202)' ($hr -eq 0 -and $sb.ToString() -eq 'Mozc Readable') "(value '$dd' -> '$($sb.ToString())' hr=$hr)"
+
 Write-Host '== D. add the input method for ja-JP'
 try {
   $l = New-WinUserLanguageList ja-JP

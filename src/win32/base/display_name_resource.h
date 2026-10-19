@@ -36,3 +36,8 @@
 // Synonym of IDS_TEXTSERVICE_DISPLAYNAME to update
 // MUI string cache.  See b/2994558 for details.
 #define IDS_TEXTSERVICE_DISPLAYNAME_SYNONYM 201
+// mozc-readable: the display name of the non-Google build changed from "Mozc"
+// to "Mozc Readable". SetLanguageProfileDisplayName does not support version
+// modifiers and caches the resolved string (MUI cache), so a changed text needs
+// a new resource ID (b/2994558). See TsfProfile::GetDescriptionTextIndex().
+#define IDS_TEXTSERVICE_DISPLAYNAME_READABLE 202

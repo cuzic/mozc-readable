@@ -147,6 +147,7 @@ BEGIN
 #else
     IDS_IME_DISPLAYNAME     "Mozc Readable"
     IDS_TEXTSERVICE_DISPLAYNAME_SYNONYM  "Mozc Readable"
+    IDS_TEXTSERVICE_DISPLAYNAME_READABLE  "Mozc Readable"
 #endif
     IDS_INPUTMODE           "入力モード"
     IDS_WIN8_TRAY_ITEM      "右クリックで IME のオプションを表示します"
@@ -190,6 +191,7 @@ BEGIN
 #else
     IDS_IME_DISPLAYNAME     "Mozc Readable"
     IDS_TEXTSERVICE_DISPLAYNAME_SYNONYM  "Mozc Readable"
+    IDS_TEXTSERVICE_DISPLAYNAME_READABLE  "Mozc Readable"
 #endif
     IDS_INPUTMODE           "Input Mode"
     IDS_WIN8_TRAY_ITEM      "Right click to show IME options"
