@@ -209,6 +209,13 @@ ThreadSlot& CurrentSlot() {
   return slot;
 }
 
+// Set by CountKeyDown(), consumed by the OnKeyDown that follows the counted
+// OnTestKeyDown/OnPreservedKey. Per thread, like the slot.
+bool& KeyDownCounted() {
+  thread_local bool counted = false;
+  return counted;
+}
+
 void Pulse() {
   if (HANDLE ev = GetChangeEvent(); ev != nullptr) {
     ::SetEvent(ev);
@@ -263,7 +270,20 @@ void TipStatePublisher::SetComposition(const TipCompositionState& composition) {
   if (slot.published() && slot.Flush().pulse) Pulse();
 }
 
+void TipStatePublisher::CountKeyDownUnlessCounted() {
+  bool& counted = KeyDownCounted();
+  if (counted) {
+    counted = false;
+    return;
+  }
+  CountKeyDown();
+  counted = false;
+}
+
+void TipStatePublisher::ForgetCountedKeyDown() { KeyDownCounted() = false; }
+
 void TipStatePublisher::CountKeyDown() {
+  KeyDownCounted() = true;
   ThreadSlot& slot = CurrentSlot();
   ++slot.pending().key_seq;
   if (slot.published() && slot.Flush().pulse) Pulse();
