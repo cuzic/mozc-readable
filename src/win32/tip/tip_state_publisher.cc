@@ -84,6 +84,13 @@ struct Snapshot {
   uint32_t edit_session_fail_count = 0;
   uint32_t diag_flags = 0;
   uint32_t update_context_id = 0;
+  // Version 5 (never part of SameState: they do not pulse).
+  uint64_t key_sink_focus_tick_ms = 0;
+  uint64_t key_sink_blur_tick_ms = 0;
+  uint64_t thread_focus_tick_ms = 0;
+  uint64_t first_key_tick_ms = 0;
+  // Not published: set by a foreground key sink focus, cleared by the next counted key-down.
+  bool awaiting_first_key = false;
   // "Is there anything to write": every published field.
   bool operator==(const Snapshot& o) const {
     return SameState(o) && preedit_utf16_len == o.preedit_utf16_len &&
@@ -95,7 +102,11 @@ struct Snapshot {
            revert_count == o.revert_count &&
            submit_other_count == o.submit_other_count &&
            edit_session_fail_count == o.edit_session_fail_count &&
-           diag_flags == o.diag_flags && update_context_id == o.update_context_id;
+           diag_flags == o.diag_flags && update_context_id == o.update_context_id &&
+           key_sink_focus_tick_ms == o.key_sink_focus_tick_ms &&
+           key_sink_blur_tick_ms == o.key_sink_blur_tick_ms &&
+           thread_focus_tick_ms == o.thread_focus_tick_ms &&
+           first_key_tick_ms == o.first_key_tick_ms;
   }
   // "Should the change event be pulsed": the state fields only. Changes of
   // preedit_utf16_len, preedit_cursor, key_seq and composition_key_seq alone
@@ -159,7 +170,7 @@ class ThreadSlot {
       s->server_ready = pending_.server_ready;
       s->composition_key_seq = pending_.composition_key_seq;
     }
-    if (size_ >= sizeof(TipSharedState)) {
+    if (size_ >= kTipSharedStateV4Size) {
       // Likewise an 80 byte (version 3) block is never touched beyond its end.
       s->composition_start_count = pending_.composition_start_count;
       s->submit_end_edit_count = pending_.submit_end_edit_count;
@@ -169,6 +180,13 @@ class ThreadSlot {
       s->edit_session_fail_count = pending_.edit_session_fail_count;
       s->diag_flags = pending_.diag_flags;
       s->update_context_id = pending_.update_context_id;
+    }
+    if (size_ >= sizeof(TipSharedState)) {
+      // Likewise a 112 byte (version 4) block is never touched beyond its end.
+      s->key_sink_focus_tick_ms = pending_.key_sink_focus_tick_ms;
+      s->key_sink_blur_tick_ms = pending_.key_sink_blur_tick_ms;
+      s->thread_focus_tick_ms = pending_.thread_focus_tick_ms;
+      s->first_key_tick_ms = pending_.first_key_tick_ms;
     }
     ::InterlockedIncrement(seq);  // even: stable (full barrier)
     last_ = pending_;
@@ -197,10 +215,15 @@ class ThreadSlot {
     size_ = sizeof(TipSharedState);
     void* view = ::MapViewOfFile(mapping_, FILE_MAP_WRITE, 0, 0, size_);
     if (view == nullptr && existed) {
-      // A section left by an older DLL has the version 3 size (80), or the
-      // version 2 size (48). Write that version into it (ADR-267 D9).
-      size_ = kTipSharedStateV3Size;
+      // A section left by an older DLL has the version 4 size (112), the
+      // version 3 size (80), or the version 2 size (48). Write that version
+      // into it (ADR-267 D9).
+      size_ = kTipSharedStateV4Size;
       view = ::MapViewOfFile(mapping_, FILE_MAP_WRITE, 0, 0, size_);
+      if (view == nullptr) {
+        size_ = kTipSharedStateV3Size;
+        view = ::MapViewOfFile(mapping_, FILE_MAP_WRITE, 0, 0, size_);
+      }
       if (view == nullptr) {
         size_ = kTipSharedStateV2Size;
         view = ::MapViewOfFile(mapping_, FILE_MAP_WRITE, 0, 0, size_);
@@ -216,8 +239,10 @@ class ThreadSlot {
     // The block is zero-filled. seq == 0 means "not published yet"; `magic` is
     // written last so a reader that checks it never sees a half-initialized header.
     // `Get()` writes the version unconditionally, so a 48 byte block must be
-    // labelled 2 and an 80 byte block 3, or a reader would map more than there is.
+    // labelled 2, an 80 byte block 3 and a 112 byte block 4, or a reader would
+    // map more than there is.
     state_->version = size_ >= sizeof(TipSharedState) ? kTipSharedStateVersion
+                      : size_ >= kTipSharedStateV4Size ? 4
                       : size_ >= kTipSharedStateV3Size ? 3
                                                        : 2;
     state_->thread_id = tid;
@@ -229,7 +254,7 @@ class ThreadSlot {
 
   HANDLE mapping_ = nullptr;
   TipSharedState* state_ = nullptr;
-  size_t size_ = 0;  // mapped (and writable) size: 112, or 80 / 48 for an old block
+  size_t size_ = 0;  // mapped (and writable) size: 144, or 112 / 80 / 48 for an old block
   bool tried_ = false;
   bool published_ = false;
   Snapshot pending_;
@@ -338,7 +363,13 @@ void TipStatePublisher::SetComposition(const TipCompositionState& composition) {
 namespace {
 void BumpKeySeq() {
   ThreadSlot& slot = CurrentSlot();
-  ++slot.pending().key_seq;
+  Snapshot& p = slot.pending();
+  ++p.key_seq;
+  if (p.awaiting_first_key) {
+    // The first key-down the TIP sees after it became the keyboard-focused key sink (version 5).
+    p.first_key_tick_ms = ::GetTickCount64();
+    p.awaiting_first_key = false;
+  }
   if (slot.published() && slot.Flush().pulse) Pulse();
 }
 }  // namespace
@@ -407,6 +438,26 @@ void TipStatePublisher::SetUpdateInfo(uint32_t context_id,
   // Sticky: an Update that saw a TEST_SEND_KEY response is rare, and the next
   // edit session clears the state the flag would otherwise show.
   if (last_output_is_test) p.diag_flags |= 2u;
+  FlushDiagnostic(slot);
+}
+
+void TipStatePublisher::NoteKeySinkFocus(bool foreground) {
+  ThreadSlot& slot = CurrentSlot();
+  Snapshot& p = slot.pending();
+  const ULONGLONG now = ::GetTickCount64();
+  if (foreground) {
+    p.key_sink_focus_tick_ms = now;
+    p.first_key_tick_ms = 0;
+    p.awaiting_first_key = true;
+  } else {
+    p.key_sink_blur_tick_ms = now;
+  }
+  FlushDiagnostic(slot);
+}
+
+void TipStatePublisher::NoteThreadFocus() {
+  ThreadSlot& slot = CurrentSlot();
+  slot.pending().thread_focus_tick_ms = ::GetTickCount64();
   FlushDiagnostic(slot);
 }
 

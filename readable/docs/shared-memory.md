@@ -3,7 +3,7 @@
 [mozc-readable](https://github.com/cuzic/mozc-readable) の TIP(Mozc の TSF 入力方式)が書き出す、IME の開閉・入力モードの共有メモリの仕様です。awase を含め、外部のプロセスが「いまの IME の状態」を読むための取り決めです。方針と経緯は [ADR-265](https://github.com/cuzic/awase/blob/develop/docs/adr/265-mozc-readable-integration.md)(awase リポジトリ) を参照してください。
 
 - 本書の「ADR-nnn」は、awase リポジトリの `docs/adr/` の文書を指します。
-- **版**: **version 4**(112 バイト。診断用のカウンタなどを追加。6-3)。version 3(80 バイト。組成の状態。ADR-267)は `readable` に入っています(a0c5074c、PR #4)。version 2 は `aa228f6`。version 2 の動作は CI で確認済みです(通常の窓・Chrome・Notepad・AppContainer の窓から別プロセスが読めること。IME を切り替えたあとの `active=0` も実測済み。5-1)。version 4 の項目は**実機での実測がまだありません**。version 1(`reserved` のまま、`magic` が先に書かれる)の読み方は、古いビルド向けに 6 章に残します。
+- **版**: **version 5**(144 バイト。キーボードフォーカスの時刻を追加。6-4)。version 4(112 バイト。診断用のカウンタなどを追加。6-3)。version 3(80 バイト。組成の状態。ADR-267)は `readable` に入っています(a0c5074c、PR #4)。version 2 は `aa228f6`。version 2 の動作は CI で確認済みです(通常の窓・Chrome・Notepad・AppContainer の窓から別プロセスが読めること。IME を切り替えたあとの `active=0` も実測済み。5-1)。version 4 の項目は**実機での実測がまだありません**。version 1(`reserved` のまま、`magic` が先に書かれる)の読み方は、古いビルド向けに 6 章に残します。
 - 出典: mozc-readable の `src/win32/tip/tip_state_publisher.{h,cc}`(`readable` ブランチ)。食い違いがあれば実装が正です。
 - 効く IME は mozc-readable だけです(公式の Mozc・Google 日本語入力・Microsoft IME には書き出し側が無い)。
 
@@ -71,7 +71,7 @@ ZMK など Raw HID の仕組みが標準で無いファームについては、�
 - マッピングの DACL は、LocalSystem・Administrators・現在のユーザーに全権、`ALL APPLICATION PACKAGES` に読み取りです(`WinSandbox::kSharableFileForRead`)。
 - **AppContainer 内のプロセス(UWP など)が作る `Local\` は、`\Sessions\<n>\AppContainerNamedObjects\<AppContainer SID>\` に振り分けられます**。そのため、`OpenFileMappingW("Local\\mozc-readable-ime-<TID>")` では届きません。**`NtOpenSection` で、その名前空間の完全なパスを指定すれば外から読めます**(CI で実測済み。4-4 章)。通知イベント(`...-changed`)も同じ名前空間に振り分けられる見込みですが、未確認です。
 
-## 2. `TipSharedState`(version 4、112 バイト)
+## 2. `TipSharedState`(version 5、144 バイト)
 
 リトルエンディアン。構造体の配置は外部インターフェースの一部で、**追記のみ・互換を壊すときは `version` を上げる**取り決めです。
 
@@ -104,8 +104,13 @@ ZMK など Raw HID の仕組みが標準で無いファームについては、�
 | 100 | u32 | `edit_session_fail_count` | `RequestEditSession` が失敗した(または**同期で実行された**編集セッションが失敗を返した)回数。非同期で許可されたセッションが後で失敗しても数えない。`TF_E_SYNCHRONOUS`(Word の回避策が始まる合図)も入る(`diag_flags` の bit0 と並べて区別する) |
 | 104 | u32 | `diag_flags` | bit0=スレッドの `use_async_lock_in_key_handler`(一度 `TF_E_SYNCHRONOUS` が返ると真になる。`ActivateEx`/`Deactivate` で落ちる)、bit1=`TipUiHandler::Update` が、`last_output` が TEST_SEND_KEY の応答(`last_output_is_test`)の context を**一度でも**読んだ(一度立つと下がらない。編集セッションごとに `last_output_is_test` は偽へ戻るため、瞬間値では見えない) |
 | 108 | u32 | `update_context_id` | `TipUiHandler::Update` が最後に読んだ context(`TipPrivateContext`)の**通番**(プロセス内で 1 から増える。ポインタではなく、解放後に同じ値が再利用されない)。context の同一性の比較にだけ使う |
+| 112 | u64 | `key_sink_focus_tick_ms` | `ITfKeyEventSink::OnSetFocus(TRUE)` が呼ばれた `GetTickCount64()`(この TIP がキーボードフォーカスを持つキーシンクになった時刻)。0=まだ無い。Windows Terminal 等で「フォーカス変更直後の最初の打鍵が TIP に届かない」型の症状を調べるための診断用 |
+| 120 | u64 | `key_sink_blur_tick_ms` | `ITfKeyEventSink::OnSetFocus(FALSE)` が呼ばれた時刻。0=まだ無い |
+| 128 | u64 | `thread_focus_tick_ms` | `ITfThreadFocusSink::OnSetThreadFocus` が呼ばれた時刻(OS のキーボードフォーカスがこのスレッドに届いた)。0=まだ無い |
+| 136 | u64 | `first_key_tick_ms` | `key_sink_focus_tick_ms` を更新したあと、TIP が**最初に数えたキーダウン**(`key_seq` が増えた)の時刻。0=フォーカスの後まだキーが来ていない。キーシンクが前景になるたびに 0 へ戻る |
 
-- 全体は 112 バイト(`update_tick_ms`〈u64〉がオフセット 40 で 8 の倍数、version 3 の追記の u32×8 が 48〜79、version 4 の追記の u32×8 が 80〜111。暗黙の詰め物なし)。今後の追記は 112 から始め、u64 は 8 の倍数のオフセットに置く。参考: Python は `struct.Struct("<10IQ16I")`(= 112、version 3 だけなら `<10IQ8I` = 80)。
+- 全体は 144 バイト(`update_tick_ms`〈u64〉がオフセット 40 で 8 の倍数、version 3 の追記の u32×8 が 48〜79、version 4 の追記の u32×8 が 80〜111、version 5 の追記の u64×4 が 112〜143。暗黙の詰め物なし)。今後の追記は 144 から始め、u64 は 8 の倍数のオフセットに置く。参考: Python は `struct.Struct("<10IQ16I4Q")`(= 144、version 4 だけなら `<10IQ16I` = 112、version 3 だけなら `<10IQ8I` = 80)。
+- **version 5 の項目(オフセット 112〜143)は診断用**です。時刻はすべて `GetTickCount64()` で、**変化したときだけ書き、通知イベントは pulse しません**。`active == 0` のときは他の項目と同じく無視します。読み手は、自分が打鍵を送った時刻と並べて「その打鍵が、TIP がキーを受け取る側になる前だったか」を調べます(解像度は約 15.6ms)。
 - **version 4 の項目(オフセット 80〜111)は診断用**です(「ひらがなにはなるが変換候補にならない」型の症状を調べるため。Windows Terminal で観測)。カウンタはすべて単調増加でラップし、**変化したときだけ書き、通知イベントは pulse しません**。`active == 0` のときは他の項目と同じく無視し、`Deactivate` でもカウンタは 0 に戻しません(スレッドの通算)。読み手は差を取って使います。
 - 48 バイトまでの意味は version 2 と同じです。
 
@@ -141,14 +146,14 @@ ZMK など Raw HID の仕組みが標準で無いファームについては、�
 ### 3-1. 書く判定と pulse する判定は別
 
 - **書くかどうか**は、公開する全項目(`key_seq` を含む)の比較です。どれかが変わったときだけ書き、変化が無ければ `seq` も進めません(フォーカス移動やクリックのたびに呼ばれるが、ほとんどは無変更のため)。
-- **通知イベントを pulse するかどうか**は、状態の項目(`active`・`effective_*`・`tsf_*`・`phase`・`candidate_category`・`scope_forced_mode`・`server_ready`)の変化だけです。`preedit_utf16_len`・`preedit_cursor`・`key_seq`・`composition_key_seq` と、version 4 の項目(80〜111)だけが変わったときは書きますが pulse しません(打鍵のたびに起こされるのを避けるため)。これらは、状態の変化で起きたときに読み直すか、自分の打鍵の後に読んでください。最初の書き込みは常に pulse します。
+- **通知イベントを pulse するかどうか**は、状態の項目(`active`・`effective_*`・`tsf_*`・`phase`・`candidate_category`・`scope_forced_mode`・`server_ready`)の変化だけです。`preedit_utf16_len`・`preedit_cursor`・`key_seq`・`composition_key_seq` と、version 4 の項目(80〜111)・version 5 の項目(112〜143)だけが変わったときは書きますが pulse しません(打鍵のたびに起こされるのを避けるため)。これらは、状態の変化で起きたときに読み直すか、自分の打鍵の後に読んでください。最初の書き込みは常に pulse します。
 - したがって **`update_tick_ms` は「最後に書いた時刻」であり、生存の印ではありません**。
 - 書き込みの手順: `seq` を +1(奇数)→ 項目と `update_tick_ms` を書く → `seq` を +1(偶数)。どちらの +1 も全バリア(`InterlockedIncrement`)。
 - 組成の項目(`phase`・`candidate_category`・`preedit_*`・`composition_key_seq`)は、TIP が UI を更新する地点(`TipUiHandler::Update`、編集セッションの末尾)で書きます。`key_seq` は打鍵の入口で、`scope_forced_mode` は入力モードの更新(フォーカス移動・入力スコープの変化)で書きます。
 
 ### 3-2. 旧サイズの共有メモリが残っているとき
 
-長寿命のプロセスは旧 DLL のまま 48 バイトまたは 80 バイトのセクションを作り続けるので、新旧が同時に存在します。同名のセクションが旧サイズで残っていて 112 バイトで map できないとき、書き出し側はまず 80 バイトで map し直して **`version = 3` として最初の 80 バイトだけ**を書き、80 バイトでも map できなければ **`version = 2` として最初の 48 バイトだけ**を書きます(どちらもそれ以降には触れない)。version 4 の項目(または version 3 の項目)は出しません。
+長寿命のプロセスは旧 DLL のまま 48・80・112 バイトのセクションを作り続けるので、新旧が同時に存在します。同名のセクションが旧サイズで残っていて 144 バイトで map できないとき、書き出し側はまず 112 バイトで map し直して **`version = 4` として最初の 112 バイトだけ**を書き、112 バイトでも map できなければ 80 バイトで map し直して **`version = 3` として最初の 80 バイトだけ**を書き、80 バイトでも map できなければ **`version = 2` として最初の 48 バイトだけ**を書きます(どちらもそれ以降には触れない)。version 4 の項目(または version 3 の項目)は出しません。
 - `active` は、`TipTextService::ActivateEx` の**成功した末尾**(実際の開閉・モードを書いた後)で 1、`Deactivate()` の(アンロード済みかの検査の直後)で 0 になります。`ActivateEx` が途中で失敗したときは 1 になりません。有効にする直前に 0 を書き、組成の項目と `diag_flags` の bit0 を落とします(前回の有効化の値を見せない)。
 - スレッドが終わるか DLL が外れるとビューとハンドルが閉じられ、**最後のハンドルが閉じるとマッピングは消えます**。
 
@@ -159,11 +164,11 @@ ZMK など Raw HID の仕組みが標準で無いファームについては、�
 ```text
 open  = OpenFileMappingW(FILE_MAP_READ, FALSE, "Local\mozc-readable-ime-" + tid)
 view  = MapViewOfFile(open, FILE_MAP_READ, 0, 0, 48)   # まず 48 で map し、version を読む
-if view.version >= 3: map し直す(version 3 は 80、version 4 以上は 112)   # 固定サイズで map すると小さいブロックが読めない
+if view.version >= 3: map し直す(version 3 は 80、version 4 は 112、version 5 以上は 144)   # 固定サイズで map すると小さいブロックが読めない
 loop (数回まで):
     seq1 = acquire_load(view.seq)
     if seq1 is odd: retry                  # 書き込み中
-    copy = volatile_read(view[0..size])     # size = 48(version 2)/ 80(version 3)/ 112(version 4)。中身は 1 回だけ読む
+    copy = volatile_read(view[0..size])     # size = 48(version 2)/ 80(version 3)/ 112(version 4)/ 144(version 5)。中身は 1 回だけ読む
     fence(acquire)
     seq2 = load(view.seq)
     if seq1 == seq2: accept copy; break     # 一致したときだけ採る
@@ -172,7 +177,7 @@ UnmapViewOfFile; CloseHandle                # 読むたびに閉じる(ハンド
 ```
 
 - **ハンドルを持ち続けない**: 読むたびに Open → Map → 読む → Unmap → Close します。持ち続けると、書き出し側のプロセスが終わった後も古いブロックが残ります。
-- **map サイズ**: 「サイズ 0(セクション全体)で map する」か、「48 で map して `version` を読み、`version >= 4` なら 112、`version == 3` なら 80 で map し直す」のどちらかにしてください。固定サイズで map すると、小さいブロックの開閉・モードまで読めなくなります。**version 3 の読み手(80 バイトだけ map して読む)は、version 4 のブロックでも先頭 80 バイトの意味が同じなのでそのまま動きます**(`version` を `>= 3` で判定している限り。`== 3` で判定する読み手は version 4 を捨てます)。書き出し側が旧サイズのセクションを見つけたときの `version` は 3(80 バイト)または 2(48 バイト)です(3-2)。
+- **map サイズ**: 「サイズ 0(セクション全体)で map する」か、「48 で map して `version` を読み、`version >= 4` なら 112(`version >= 5` なら 144)、`version == 3` なら 80 で map し直す」のどちらかにしてください。固定サイズで map すると、小さいブロックの開閉・モードまで読めなくなります。**version 3 の読み手(80 バイトだけ map して読む)は、version 4 のブロックでも先頭 80 バイトの意味が同じなのでそのまま動きます**(`version` を `>= 3` で判定している限り。`== 3` で判定する読み手は version 4 を捨てます)。書き出し側が旧サイズのセクションを見つけたときの `version` は 3(80 バイト)または 2(48 バイト)です(3-2)。
 - Rust では `read_volatile` と `fence(Ordering::Acquire)` が要ります。
 
 ### 4-2. 受け入れ条件(すべて満たしたときだけ「読めた」とする)
@@ -253,6 +258,11 @@ version 1 のブロックを読む場合は、`active` が無いので「いま�
 - 追記のみです(オフセット 80〜111 に u32×8)。0〜79 の意味は変わりません。`version` は 4、サイズは 112 です。
 - version 3 の読み手は、80 バイトで map して読み続ければ動きます(`version >= 3` で判定している場合)。CI(`verify.ps1` の state の節)が、version 3 の読み手(`reader.py`)で version 4 のブロックが読めることを確かめます。
 
+## 6-4. version 4 から version 5 へ
+
+- 追記のみです(オフセット 112〜143 に u64×4)。0〜111 の意味は変わりません。`version` は 5、サイズは 144 です。
+- version 4 の読み手は、112 バイトで map して読み続ければ動きます(`version >= 4` で判定している場合)。version 3 の読み手(80 バイト)も同じです。
+
 ## 7. 変更履歴
 
 | 日付 | 内容 |
@@ -262,3 +272,4 @@ version 1 のブロックを読む場合は、`active` が無いので「いま�
 | 2026-10-18 | 5-1: `active=0` を CI で実測(run 39098693442 以降)した結果と条件を書く。5-4: 「最初の打鍵が落ちる」の原因を、検証スクリプトのコンソール窓が前面を奪っていたこと(run 39104699356)に直し、Chrome だけに残る現象を別に書く |
 | 2026-10-18 | version 3(80 バイト、ADR-267)を追加: `phase`・`candidate_category`・`preedit_utf16_len`・`preedit_cursor`・`key_seq`・`scope_forced_mode`・`server_ready`・`composition_key_seq`。書く判定と pulse の判定を分離。読み手の map サイズの規約を追加。実装中・CI 未確認 |
 | 2026-10-19 | version 4(112 バイト)を追加: 診断用のカウンタ(`composition_start_count`・SUBMIT/REVERT の入口別・`edit_session_fail_count`)・`diag_flags`・`update_context_id`。実機の Windows Terminal で `phase=0` が数秒続く症状(1 打鍵ごとに確定される疑い)を調べるため。CI 確認前 |
+| 2026-10-21 | version 5(144 バイト)を追加: キーボードフォーカスの時刻(`key_sink_focus_tick_ms`・`key_sink_blur_tick_ms`・`thread_focus_tick_ms`・`first_key_tick_ms`)。実機の Windows Terminal で、フォーカス変更直後の最初の打鍵が TIP に届かず、素通り(リテラル)する症状の原因を、打鍵の時刻との前後関係で調べるため。実機での実測前 |

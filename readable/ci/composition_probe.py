@@ -44,10 +44,10 @@ k32.OpenEventW.argtypes = [wt.DWORD, wt.BOOL, wt.LPCWSTR]
 k32.WaitForSingleObject.argtypes = [wt.HANDLE, wt.DWORD]
 WNDPROC = ctypes.WINFUNCTYPE(ctypes.c_ssize_t, wt.HWND, wt.UINT, wt.WPARAM, wt.LPARAM)
 
-FMT = "<10IQ16I"  # TipSharedState version 4, 112 bytes (offsets 0..79 are version 3)
+FMT = "<10IQ16I4Q"  # TipSharedState version 5, 144 bytes (offsets 0..79 are version 3, 80..111 version 4)
 NAMES = ("magic version seq eo em to tm tid pid active tick phase cat plen pcur key_seq sfm srv cks "
-         "csc sub_ee sub_term revert sub_other esf flags ctx").split()
-assert struct.calcsize(FMT) == 112 and len(NAMES) == 27
+         "csc sub_ee sub_term revert sub_other esf flags ctx ks_focus ks_blur thr_focus first_key").split()
+assert struct.calcsize(FMT) == 144 and len(NAMES) == 31
 V4_COUNTERS = ("csc", "sub_ee", "sub_term", "revert", "sub_other", "esf")
 
 class GUID(ctypes.Structure):
@@ -146,7 +146,7 @@ def read(tid):
     if not _view:
         return None
     for _ in range(100):
-        a = struct.unpack(FMT, ctypes.string_at(_view, 112))
+        a = struct.unpack(FMT, ctypes.string_at(_view, 144))
         if a[2] % 2:
             continue
         if a[2] == struct.unpack("<I", ctypes.string_at(_view + 8, 4))[0]:
@@ -247,7 +247,10 @@ def main():
 
     s = p.st()
     print(f"probe: info initial {fmt(s)}", flush=True)
-    result("HARD", "block is version 4 (112 bytes) from this thread", s is not None and s["version"] == 4, fmt(s))
+    result("HARD", "block is version 5 (144 bytes) from this thread", s is not None and s["version"] == 5, fmt(s))
+    if s is not None:
+        print(f"probe: info version 5 focus ticks: key_sink_focus={s['ks_focus']} key_sink_blur={s['ks_blur']} "
+              f"thread_focus={s['thr_focus']} first_key={s['first_key']}", flush=True)
     if s is None or s["version"] < 3:
         sys.exit(1)
 

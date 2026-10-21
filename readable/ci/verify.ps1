@@ -118,8 +118,8 @@ if (Want 'state') {
 $poll = Run-Scenario 'poll' '' $keys
 $t = Get-Content $poll.Rd -Raw
 Check 'reader opened the mapping from another process' ($poll.RdExit -eq 0)
-# reader.py is a version 3 reader (it reads the first 80 bytes): it must keep working on a version 4 block.
-Check 'block is version 4 and active=1 while the TIP is live (read by a version 3 reader from another process)' ($t -match 'active=1 version=4')
+# reader.py is a version 3 reader (it reads the first 80 bytes): it must keep working on a version 5 block.
+Check 'block is version 5 and active=1 while the TIP is live (read by a version 3 reader from another process)' ($t -match 'active=1 version=5')
 Check 'the version 3 fields are in the reader output' ($t -match 'phase=\d cat=\d plen=\d pcur=\d key_seq=\d+ sfm=\d srv=\d cks=\d+')
 Check 'open: IME turned on is visible'  ($t -match 'eff_open=1 eff_mode=1')
 Check 'mode: full katakana (2) is visible' ($t -match 'eff_open=1 eff_mode=2')
