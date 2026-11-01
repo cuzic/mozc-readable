@@ -89,6 +89,9 @@ struct Snapshot {
   uint64_t key_sink_blur_tick_ms = 0;
   uint64_t thread_focus_tick_ms = 0;
   uint64_t first_key_tick_ms = 0;
+  // Version 6 (never part of SameState: they do not pulse).
+  uint32_t key_eaten_count = 0;
+  uint32_t key_passed_count = 0;
   // Not published: set by a foreground key sink focus, cleared by the next counted key-down.
   bool awaiting_first_key = false;
   // "Is there anything to write": every published field.
@@ -106,7 +109,9 @@ struct Snapshot {
            key_sink_focus_tick_ms == o.key_sink_focus_tick_ms &&
            key_sink_blur_tick_ms == o.key_sink_blur_tick_ms &&
            thread_focus_tick_ms == o.thread_focus_tick_ms &&
-           first_key_tick_ms == o.first_key_tick_ms;
+           first_key_tick_ms == o.first_key_tick_ms &&
+           key_eaten_count == o.key_eaten_count &&
+           key_passed_count == o.key_passed_count;
   }
   // "Should the change event be pulsed": the state fields only. Changes of
   // preedit_utf16_len, preedit_cursor, key_seq and composition_key_seq alone
@@ -181,12 +186,17 @@ class ThreadSlot {
       s->diag_flags = pending_.diag_flags;
       s->update_context_id = pending_.update_context_id;
     }
-    if (size_ >= sizeof(TipSharedState)) {
+    if (size_ >= kTipSharedStateV5Size) {
       // Likewise a 112 byte (version 4) block is never touched beyond its end.
       s->key_sink_focus_tick_ms = pending_.key_sink_focus_tick_ms;
       s->key_sink_blur_tick_ms = pending_.key_sink_blur_tick_ms;
       s->thread_focus_tick_ms = pending_.thread_focus_tick_ms;
       s->first_key_tick_ms = pending_.first_key_tick_ms;
+    }
+    if (size_ >= sizeof(TipSharedState)) {
+      // Likewise a 144 byte (version 5) block is never touched beyond its end.
+      s->key_eaten_count = pending_.key_eaten_count;
+      s->key_passed_count = pending_.key_passed_count;
     }
     ::InterlockedIncrement(seq);  // even: stable (full barrier)
     last_ = pending_;
@@ -215,11 +225,15 @@ class ThreadSlot {
     size_ = sizeof(TipSharedState);
     void* view = ::MapViewOfFile(mapping_, FILE_MAP_WRITE, 0, 0, size_);
     if (view == nullptr && existed) {
-      // A section left by an older DLL has the version 4 size (112), the
-      // version 3 size (80), or the version 2 size (48). Write that version
-      // into it (ADR-267 D9).
-      size_ = kTipSharedStateV4Size;
+      // A section left by an older DLL has the version 5 size (144), the
+      // version 4 size (112), the version 3 size (80), or the version 2 size
+      // (48). Write that version into it (ADR-267 D9).
+      size_ = kTipSharedStateV5Size;
       view = ::MapViewOfFile(mapping_, FILE_MAP_WRITE, 0, 0, size_);
+      if (view == nullptr) {
+        size_ = kTipSharedStateV4Size;
+        view = ::MapViewOfFile(mapping_, FILE_MAP_WRITE, 0, 0, size_);
+      }
       if (view == nullptr) {
         size_ = kTipSharedStateV3Size;
         view = ::MapViewOfFile(mapping_, FILE_MAP_WRITE, 0, 0, size_);
@@ -239,9 +253,10 @@ class ThreadSlot {
     // The block is zero-filled. seq == 0 means "not published yet"; `magic` is
     // written last so a reader that checks it never sees a half-initialized header.
     // `Get()` writes the version unconditionally, so a 48 byte block must be
-    // labelled 2, an 80 byte block 3 and a 112 byte block 4, or a reader would
+    // labelled 2, an 80 byte block 3, a 112 byte block 4 and a 144 byte block 5, or a reader would
     // map more than there is.
     state_->version = size_ >= sizeof(TipSharedState) ? kTipSharedStateVersion
+                      : size_ >= kTipSharedStateV5Size ? 5
                       : size_ >= kTipSharedStateV4Size ? 4
                       : size_ >= kTipSharedStateV3Size ? 3
                                                        : 2;
@@ -374,8 +389,21 @@ void BumpKeySeq() {
 }
 }  // namespace
 
-void TipStatePublisher::CountKeyDownUnlessCounted(uint32_t vk) {
-  if (!Counted().Consume(vk)) BumpKeySeq();
+bool TipStatePublisher::CountKeyDownUnlessCounted(uint32_t vk) {
+  if (Counted().Consume(vk)) return true;
+  BumpKeySeq();
+  return false;
+}
+
+void TipStatePublisher::NoteKeyResult(bool eaten) {
+  ThreadSlot& slot = CurrentSlot();
+  Snapshot& p = slot.pending();
+  if (eaten) {
+    ++p.key_eaten_count;
+  } else {
+    ++p.key_passed_count;
+  }
+  if (slot.published()) slot.Flush();
 }
 
 void TipStatePublisher::ForgetCountedKeyDown() { Counted().PopNewest(); }

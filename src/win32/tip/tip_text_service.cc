@@ -850,6 +850,7 @@ class TipTextServiceImpl
       // OnKeyDown will not follow: drop the mark, or it would swallow the count
       // of the next key-down that reaches OnKeyDown alone.
       TipStatePublisher::ForgetCountedKeyDown();
+      TipStatePublisher::NoteKeyResult(false);
       return result;
     }
     const UINT vk = it->second;
@@ -857,6 +858,8 @@ class TipTextServiceImpl
     const UINT scan_code = ::MapVirtualKey(VK_F10, 0);
     const UINT lparam = (alt_down << 29) | (scan_code << 16) | 1;
     result = TipKeyeventHandler::OnKeyDown(this, context, vk, lparam, eaten);
+    // OnKeyDown consumed the mark CountKeyDown() left above, so it noted nothing.
+    TipStatePublisher::NoteKeyResult(SUCCEEDED(result) && *eaten != FALSE);
     if (*eaten == FALSE && vk == VK_F10) {
       // Special treatment for F10:
       // Setting FALSE to |*eaten| is not enough when F10 key is handled by the

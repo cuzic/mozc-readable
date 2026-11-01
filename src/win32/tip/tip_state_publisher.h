@@ -51,7 +51,7 @@ namespace win32 {
 namespace tsf {
 
 inline constexpr uint32_t kTipSharedStateMagic = 0x5A52444D;  // 'MDRZ'
-inline constexpr uint32_t kTipSharedStateVersion = 5;
+inline constexpr uint32_t kTipSharedStateVersion = 6;
 // Size of the version 2 layout. A block of this size left by an older DLL is
 // still written (version 2, first 48 bytes only).
 inline constexpr size_t kTipSharedStateV2Size = 48;
@@ -61,6 +61,9 @@ inline constexpr size_t kTipSharedStateV3Size = 80;
 // Size of the version 4 layout. A block of this size left by an older DLL is
 // still written (version 4, first 112 bytes only).
 inline constexpr size_t kTipSharedStateV4Size = 112;
+// Size of the version 5 layout. A block of this size left by an older DLL is
+// still written (version 5, first 144 bytes only).
+inline constexpr size_t kTipSharedStateV5Size = 144;
 
 // Layout is part of the external interface. Append only, bump the version on
 // incompatible changes. All fields are little-endian 32/64-bit integers.
@@ -112,8 +115,13 @@ struct TipSharedState {
   uint64_t key_sink_blur_tick_ms;    // ITfKeyEventSink::OnSetFocus(FALSE)
   uint64_t thread_focus_tick_ms;     // ITfThreadFocusSink::OnSetThreadFocus (OS keyboard focus reached the thread)
   uint64_t first_key_tick_ms;        // the first key-down counted after key_sink_focus_tick_ms (0 until one arrives)
+  // ---- version 6 ----
+  uint32_t key_eaten_count;          // key-downs counted in key_seq that the key sink ate (eaten = TRUE)
+  uint32_t key_passed_count;         // key-downs counted in key_seq that the key sink did not eat (passed to the app)
 };
-static_assert(sizeof(TipSharedState) == 144, "TipSharedState layout changed");
+static_assert(sizeof(TipSharedState) == 152, "TipSharedState layout changed");
+static_assert(offsetof(TipSharedState, key_eaten_count) == kTipSharedStateV5Size,
+              "TipSharedState layout changed");
 static_assert(offsetof(TipSharedState, key_sink_focus_tick_ms) ==
                   kTipSharedStateV4Size,
               "TipSharedState layout changed");
@@ -191,12 +199,21 @@ class TipStatePublisher {
   // change OnPreservedKey, or forget the mark with ForgetCountedKeyDown().)
   // Otherwise the host called OnKeyDown without a
   // preceding OnTestKeyDown for it (observed in Windows Terminal), so counts it.
-  static void CountKeyDownUnlessCounted(uint32_t vk);
+  // Returns true if the key-down had already been counted (its result was noted
+  // by the caller that counted it).
+  static bool CountKeyDownUnlessCounted(uint32_t vk);
 
   // Forgets the newest "already counted" mark: the key CountKeyDown() just
   // counted will not reach OnKeyDown (OnTestKeyDown did not eat it, or
   // OnPreservedKey found no such preserved key).
   static void ForgetCountedKeyDown();
+
+  // Version 6: the outcome of one counted key-down (eaten by the key sink, or
+  // passed to the application). Exactly one call per key_seq increment, so that
+  // key_eaten_count + key_passed_count == key_seq for the keys counted since
+  // the TIP loaded. The outcome is the one OnTestKeyDown returned, or OnKeyDown's
+  // for a host that skipped OnTestKeyDown. Written when it changes, never pulsed.
+  static void NoteKeyResult(bool eaten);
 
   // The current key_seq of the calling thread.
   static uint32_t CurrentKeySeq();
