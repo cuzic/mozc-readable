@@ -3,7 +3,7 @@
 [mozc-readable](https://github.com/cuzic/mozc-readable) の TIP(Mozc の TSF 入力方式)が書き出す、IME の開閉・入力モードの共有メモリの仕様です。awase を含め、外部のプロセスが「いまの IME の状態」を読むための取り決めです。方針と経緯は [ADR-265](https://github.com/cuzic/awase/blob/develop/docs/adr/265-mozc-readable-integration.md)(awase リポジトリ) を参照してください。
 
 - 本書の「ADR-nnn」は、awase リポジトリの `docs/adr/` の文書を指します。
-- **版**: **version 6**(152 バイト。キー押下ごとの「食べた/素通りさせた」の数を追加。6-5)。version 5(144 バイト。キーボードフォーカスの時刻を追加。6-4)。version 4(112 バイト。診断用のカウンタなどを追加。6-3)。version 3(80 バイト。組成の状態。ADR-267)は `readable` に入っています(a0c5074c、PR #4)。version 2 は `aa228f6`。version 2 の動作は CI で確認済みです(通常の窓・Chrome・Notepad・AppContainer の窓から別プロセスが読めること。IME を切り替えたあとの `active=0` も実測済み。5-1)。version 4 の項目は**実機での実測がまだありません**。version 1(`reserved` のまま、`magic` が先に書かれる)の読み方は、古いビルド向けに 6 章に残します。
+- **版**: **version 7**(160 バイト。入力方式〈ローマ字/JISかな直接入力〉そのものの軸を追加。6-6)。version 6(152 バイト。キー押下ごとの「食べた/素通りさせた」の数を追加。6-5)。version 5(144 バイト。キーボードフォーカスの時刻を追加。6-4)。version 4(112 バイト。診断用のカウンタなどを追加。6-3)。version 3(80 バイト。組成の状態。ADR-267)は `readable` に入っています(a0c5074c、PR #4)。version 2 は `aa228f6`。version 2 の動作は CI で確認済みです(通常の窓・Chrome・Notepad・AppContainer の窓から別プロセスが読めること。IME を切り替えたあとの `active=0` も実測済み。5-1)。version 4・version 7 の項目は**実機での実測がまだありません**。version 1(`reserved` のまま、`magic` が先に書かれる)の読み方は、古いビルド向けに 6 章に残します。
 - 出典: mozc-readable の `src/win32/tip/tip_state_publisher.{h,cc}`(`readable` ブランチ)。食い違いがあれば実装が正です。
 - 効く IME は mozc-readable だけです(公式の Mozc・Google 日本語入力・Microsoft IME には書き出し側が無い)。
 
@@ -71,7 +71,7 @@ ZMK など Raw HID の仕組みが標準で無いファームについては、�
 - マッピングの DACL は、LocalSystem・Administrators・現在のユーザーに全権、`ALL APPLICATION PACKAGES` に読み取りです(`WinSandbox::kSharableFileForRead`)。
 - **AppContainer 内のプロセス(UWP など)が作る `Local\` は、`\Sessions\<n>\AppContainerNamedObjects\<AppContainer SID>\` に振り分けられます**。そのため、`OpenFileMappingW("Local\\mozc-readable-ime-<TID>")` では届きません。**`NtOpenSection` で、その名前空間の完全なパスを指定すれば外から読めます**(CI で実測済み。4-4 章)。通知イベント(`...-changed`)も同じ名前空間に振り分けられる見込みですが、未確認です。
 
-## 2. `TipSharedState`(version 6、152 バイト)
+## 2. `TipSharedState`(version 7、160 バイト)
 
 リトルエンディアン。構造体の配置は外部インターフェースの一部で、**追記のみ・互換を壊すときは `version` を上げる**取り決めです。
 
@@ -110,8 +110,11 @@ ZMK など Raw HID の仕組みが標準で無いファームについては、�
 | 136 | u64 | `first_key_tick_ms` | `key_sink_focus_tick_ms` を更新したあと、TIP が**最初に数えたキーダウン**(`key_seq` が増えた)の時刻。0=フォーカスの後まだキーが来ていない。キーシンクが前景になるたびに 0 へ戻る |
 | 144 | u32 | `key_eaten_count` | `key_seq` が増えたキーダウンのうち、キーシンクが**食べた**(`eaten = TRUE`)数。単調増加でラップ。結果は `OnTestKeyDown` が返したもの(`OnTestKeyDown` を飛ばすホストは `OnKeyDown` のもの)。Windows Terminal 等の「先頭だけ素通り」を、素通りした数で調べるための診断用 |
 | 148 | u32 | `key_passed_count` | `key_seq` が増えたキーダウンのうち、キーシンクが**食べなかった**(アプリへ素通りさせた)数。`key_eaten_count + key_passed_count` は、TIP が読み込まれてからの `key_seq` の増分に等しい(`OnTestKeyDown` の食べた結果と `OnKeyDown` の最終結果が食い違う稀な場合を除く) |
+| 152 | u32 | `prefer_kana_input` | 0/1。**フォーカスのある edit context**(`TipPrivateContext`)の `InputBehavior::prefer_kana_input` の生値。0=ローマ字入力、1=JISかな直接入力。**OSのキーボードロックビット(`GetKeyState(VK_KANA)`)ではなく、Mozc自身が読み書きする入力方式そのもの**。設定ダイアログを開かなくても、`use_romaji_key_to_toggle_input_style=1` のとき `VK_DBE_ROMAN`/`VK_DBE_NOROMAN` の押下だけで反転する(次項、`win32/base/keyevent_handler.cc`) |
+| 156 | u32 | `use_romaji_key_to_toggle_input_style` | 0/1。Mozcの設定 `use_keyboard_to_change_preedit_method` の生値。1のとき、**どのスレッド・プロセスのキー入力でも** `VK_DBE_ROMAN`/`VK_DBE_NOROMAN` の押下で `prefer_kana_input` が反転する(この設定キーはシステム/セッション全体のトグルで、スレッド・プロセス単位ではない。ソースのコメント参照) |
 
-- 全体は 152 バイト(`update_tick_ms`〈u64〉がオフセット 40 で 8 の倍数、version 3 の追記の u32×8 が 48〜79、version 4 の追記の u32×8 が 80〜111、version 5 の追記の u64×4 が 112〜143、version 6 の追記の u32×2 が 144〜151。暗黙の詰め物なし)。今後の追記は 152 から始め、u64 は 8 の倍数のオフセットに置く。参考: Python は `struct.Struct("<10IQ16I4Q2I")`(= 152、version 5 だけなら `<10IQ16I4Q` = 144、version 4 だけなら `<10IQ16I` = 112、version 3 だけなら `<10IQ8I` = 80)。
+- 全体は 160 バイト(`update_tick_ms`〈u64〉がオフセット 40 で 8 の倍数、version 3 の追記の u32×8 が 48〜79、version 4 の追記の u32×8 が 80〜111、version 5 の追記の u64×4 が 112〜143、version 6 の追記の u32×2 が 144〜151、version 7 の追記の u32×2 が 152〜159。暗黙の詰め物なし)。今後の追記は 160 から始め、u64 は 8 の倍数のオフセットに置く。参考: Python は `struct.Struct("<10IQ16I4Q4I")`(= 160、version 6 だけなら `<10IQ16I4Q2I` = 152、version 5 だけなら `<10IQ16I4Q` = 144、version 4 だけなら `<10IQ16I` = 112、version 3 だけなら `<10IQ8I` = 80)。
+- **version 7 の項目(オフセット 152〜159)は状態です**(診断用カウンタではない)。`effective_mode` などと同様に、**変化したら通知イベントを pulse します**(version 4〜6 の項目と違い、打鍵のたびには書かれない——`prefer_kana_input` が実際に反転したときだけ書く)。`active == 0` のときは無視してください。**段階1(ADR-287, awase)はこの項目を観測専用として使い、belief/actuation の判断には混ぜません**——OSのロックビット(`GetKeyState(VK_KANA)`)との食い違い・遅延を実機で集めるためです。
 - **version 6 の項目(オフセット 144〜151)は診断用**です。カウンタは単調増加でラップし、**変化したときだけ書き、通知イベントは pulse しません**。`active == 0` のときは無視し、`Deactivate` でも 0 に戻しません。読み手は、自分の打鍵の前後で差を取り、`Δkey_seq == Δeaten + Δpassed` のうち何打鍵が食べられ何打鍵が素通りしたかを見ます。
 - **version 5 の項目(オフセット 112〜143)は診断用**です。時刻はすべて `GetTickCount64()` で、**変化したときだけ書き、通知イベントは pulse しません**。`active == 0` のときは他の項目と同じく無視します。読み手は、自分が打鍵を送った時刻と並べて「その打鍵が、TIP がキーを受け取る側になる前だったか」を調べます(解像度は約 15.6ms)。
 - **version 4 の項目(オフセット 80〜111)は診断用**です(「ひらがなにはなるが変換候補にならない」型の症状を調べるため。Windows Terminal で観測)。カウンタはすべて単調増加でラップし、**変化したときだけ書き、通知イベントは pulse しません**。`active == 0` のときは他の項目と同じく無視し、`Deactivate` でもカウンタは 0 に戻しません(スレッドの通算)。読み手は差を取って使います。
@@ -149,7 +152,7 @@ ZMK など Raw HID の仕組みが標準で無いファームについては、�
 ### 3-1. 書く判定と pulse する判定は別
 
 - **書くかどうか**は、公開する全項目(`key_seq` を含む)の比較です。どれかが変わったときだけ書き、変化が無ければ `seq` も進めません(フォーカス移動やクリックのたびに呼ばれるが、ほとんどは無変更のため)。
-- **通知イベントを pulse するかどうか**は、状態の項目(`active`・`effective_*`・`tsf_*`・`phase`・`candidate_category`・`scope_forced_mode`・`server_ready`)の変化だけです。`preedit_utf16_len`・`preedit_cursor`・`key_seq`・`composition_key_seq` と、version 4 の項目(80〜111)・version 5 の項目(112〜143)・version 6 の項目(144〜151)だけが変わったときは書きますが pulse しません(打鍵のたびに起こされるのを避けるため)。これらは、状態の変化で起きたときに読み直すか、自分の打鍵の後に読んでください。最初の書き込みは常に pulse します。
+- **通知イベントを pulse するかどうか**は、状態の項目(`active`・`effective_*`・`tsf_*`・`phase`・`candidate_category`・`scope_forced_mode`・`server_ready`・version 7 の `prefer_kana_input`・`use_romaji_key_to_toggle_input_style`)の変化だけです。`preedit_utf16_len`・`preedit_cursor`・`key_seq`・`composition_key_seq` と、version 4 の項目(80〜111)・version 5 の項目(112〜143)・version 6 の項目(144〜151)だけが変わったときは書きますが pulse しません(打鍵のたびに起こされるのを避けるため)。これらは、状態の変化で起きたときに読み直すか、自分の打鍵の後に読んでください。最初の書き込みは常に pulse します。
 - したがって **`update_tick_ms` は「最後に書いた時刻」であり、生存の印ではありません**。
 - 書き込みの手順: `seq` を +1(奇数)→ 項目と `update_tick_ms` を書く → `seq` を +1(偶数)。どちらの +1 も全バリア(`InterlockedIncrement`)。
 - 組成の項目(`phase`・`candidate_category`・`preedit_*`・`composition_key_seq`)は、TIP が UI を更新する地点(`TipUiHandler::Update`、編集セッションの末尾)で書きます。`key_seq` は打鍵の入口で、`scope_forced_mode` は入力モードの更新(フォーカス移動・入力スコープの変化)で書きます。
@@ -167,11 +170,11 @@ ZMK など Raw HID の仕組みが標準で無いファームについては、�
 ```text
 open  = OpenFileMappingW(FILE_MAP_READ, FALSE, "Local\mozc-readable-ime-" + tid)
 view  = MapViewOfFile(open, FILE_MAP_READ, 0, 0, 48)   # まず 48 で map し、version を読む
-if view.version >= 3: map し直す(version 3 は 80、version 4 は 112、version 5 は 144、version 6 以上は 152)   # 固定サイズで map すると小さいブロックが読めない
+if view.version >= 3: map し直す(version 3 は 80、version 4 は 112、version 5 は 144、version 6 は 152、version 7 以上は 160)   # 固定サイズで map すると小さいブロックが読めない
 loop (数回まで):
     seq1 = acquire_load(view.seq)
     if seq1 is odd: retry                  # 書き込み中
-    copy = volatile_read(view[0..size])     # size = 48(version 2)/ 80(version 3)/ 112(version 4)/ 144(version 5)/ 152(version 6)。中身は 1 回だけ読む
+    copy = volatile_read(view[0..size])     # size = 48(version 2)/ 80(version 3)/ 112(version 4)/ 144(version 5)/ 152(version 6)/ 160(version 7)。中身は 1 回だけ読む
     fence(acquire)
     seq2 = load(view.seq)
     if seq1 == seq2: accept copy; break     # 一致したときだけ採る
@@ -180,7 +183,7 @@ UnmapViewOfFile; CloseHandle                # 読むたびに閉じる(ハンド
 ```
 
 - **ハンドルを持ち続けない**: 読むたびに Open → Map → 読む → Unmap → Close します。持ち続けると、書き出し側のプロセスが終わった後も古いブロックが残ります。
-- **map サイズ**: 「サイズ 0(セクション全体)で map する」か、「48 で map して `version` を読み、`version >= 4` なら 112(`version == 5` なら 144、`version >= 6` なら 152)、`version == 3` なら 80 で map し直す」のどちらかにしてください。固定サイズで map すると、小さいブロックの開閉・モードまで読めなくなります。**version 3 の読み手(80 バイトだけ map して読む)は、version 4 のブロックでも先頭 80 バイトの意味が同じなのでそのまま動きます**(`version` を `>= 3` で判定している限り。`== 3` で判定する読み手は version 4 を捨てます)。書き出し側が旧サイズのセクションを見つけたときの `version` は 3(80 バイト)または 2(48 バイト)です(3-2)。
+- **map サイズ**: 「サイズ 0(セクション全体)で map する」か、「48 で map して `version` を読み、`version >= 4` なら 112(`version == 5` なら 144、`version == 6` なら 152、`version >= 7` なら 160)、`version == 3` なら 80 で map し直す」のどちらかにしてください。固定サイズで map すると、小さいブロックの開閉・モードまで読めなくなります。**version 3 の読み手(80 バイトだけ map して読む)は、version 4 のブロックでも先頭 80 バイトの意味が同じなのでそのまま動きます**(`version` を `>= 3` で判定している限り。`== 3` で判定する読み手は version 4 を捨てます)。書き出し側が旧サイズのセクションを見つけたときの `version` は 3(80 バイト)または 2(48 バイト)です(3-2)。
 - Rust では `read_volatile` と `fence(Ordering::Acquire)` が要ります。
 
 ### 4-2. 受け入れ条件(すべて満たしたときだけ「読めた」とする)
@@ -271,6 +274,12 @@ version 1 のブロックを読む場合は、`active` が無いので「いま�
 - 追記のみです(オフセット 144〜151 に u32×2:`key_eaten_count`・`key_passed_count`)。0〜143 の意味は変わりません。`version` は 6、サイズは 152 です。
 - version 5 の読み手は、144 バイトで map して読み続ければ動きます(`version >= 5` で判定している場合)。
 
+## 6-6. version 6 から version 7 へ
+
+- 追記のみです(オフセット 152〜159 に u32×2:`prefer_kana_input`・`use_romaji_key_to_toggle_input_style`)。0〜151 の意味は変わりません。`version` は 7、サイズは 160 です。
+- version 6 の読み手は、152 バイトで map して読み続ければ動きます(`version >= 6` で判定している場合)。
+- version 4〜6 の追記と違い、**この2項目は状態として扱い、変化したら pulse します**(2章参照)。
+
 ## 7. 変更履歴
 
 | 日付 | 内容 |
@@ -282,3 +291,4 @@ version 1 のブロックを読む場合は、`active` が無いので「いま�
 | 2026-10-19 | version 4(112 バイト)を追加: 診断用のカウンタ(`composition_start_count`・SUBMIT/REVERT の入口別・`edit_session_fail_count`)・`diag_flags`・`update_context_id`。実機の Windows Terminal で `phase=0` が数秒続く症状(1 打鍵ごとに確定される疑い)を調べるため。CI 確認前 |
 | 2026-10-21 | version 5(144 バイト)を追加: キーボードフォーカスの時刻(`key_sink_focus_tick_ms`・`key_sink_blur_tick_ms`・`thread_focus_tick_ms`・`first_key_tick_ms`)。実機の Windows Terminal で、フォーカス変更直後の最初の打鍵が TIP に届かず、素通り(リテラル)する症状の原因を、打鍵の時刻との前後関係で調べるため。実機での実測前 |
 | 2026-11-01 | version 6(152 バイト)を追加: `key_eaten_count`・`key_passed_count`。実機で、IME ON から 137ms 後の `da`(Chrome)の `d`/`a` のどちらが素通りしたかを `key_seq` では区別できなかったため。診断用で挙動は変えない。Windows 向けのビルドと CI は未実行 |
+| 2026-11-04 | version 7(160 バイト)を追加: `prefer_kana_input`・`use_romaji_key_to_toggle_input_style`。dragonflyg4 の実機(Windows Terminal、Mozc Readable運用中)で、awase が送った romaji "to" の瞬間だけ JIS かな配列として解釈され「ｶﾗ」に化ける事例を確認(awase の BUG-106 追補7)。従来の検知(OS の `GetKeyState(VK_KANA)` ロックビット、ADR-118)は Mozc 自身の入力方式そのものとは別軸だったため、`InputBehavior::prefer_kana_input`(`VK_DBE_ROMAN`/`VK_DBE_NOROMAN` で反転しうる、システム/セッション全体のトグル)を直接出す。診断用で挙動は変えない(Publish する値を読むだけ、`prefer_kana_input` 自体の計算ロジックには触れていない)。Windows 向けのビルドと CI は未実行。詳細は awase の [ADR-287](https://github.com/cuzic/awase/blob/develop/docs/adr/287-mozc-input-style-signal.md) |

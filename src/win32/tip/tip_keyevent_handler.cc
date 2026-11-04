@@ -432,6 +432,14 @@ HRESULT OnKey(TipTextService* text_service, ITfContext* context,
     // See b/3118905 for why this is necessary.
     KeyEventHandler::UpdateBehaviorInImeProcessKey(
         vk, is_key_down, ime_state, private_context->mutable_input_behavior());
+    // mozc-readable (version 7, ADR-287 in awase): publish after every call
+    // above, not only on an actual flip -- SetInputStyle/Flush() already
+    // no-op when nothing changed, so this stays next to the only place
+    // prefer_kana_input can flip instead of threading a changed-bool back.
+    TipStatePublisher::SetInputStyle(
+        private_context->input_behavior().prefer_kana_input,
+        private_context->input_behavior()
+            .use_romaji_key_to_toggle_input_style);
 
     std::unique_ptr<Win32KeyboardInterface> keyboard(
         Win32KeyboardInterface::CreateDefault());

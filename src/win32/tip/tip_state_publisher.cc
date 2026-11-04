@@ -92,6 +92,9 @@ struct Snapshot {
   // Version 6 (never part of SameState: they do not pulse).
   uint32_t key_eaten_count = 0;
   uint32_t key_passed_count = 0;
+  // Version 7.
+  uint32_t prefer_kana_input = 0;
+  uint32_t use_romaji_key_to_toggle_input_style = 0;
   // Not published: set by a foreground key sink focus, cleared by the next counted key-down.
   bool awaiting_first_key = false;
   // "Is there anything to write": every published field.
@@ -115,14 +118,20 @@ struct Snapshot {
   }
   // "Should the change event be pulsed": the state fields only. Changes of
   // preedit_utf16_len, preedit_cursor, key_seq and composition_key_seq alone
-  // are written without waking the waiters (ADR-267 D6).
+  // are written without waking the waiters (ADR-267 D6). prefer_kana_input and
+  // use_romaji_key_to_toggle_input_style are treated as state (like
+  // effective_mode): a flip is exactly the event ADR-287 wants observers to
+  // wake up for.
   bool SameState(const Snapshot& o) const {
     return effective_open == o.effective_open &&
            effective_mode == o.effective_mode && tsf_open == o.tsf_open &&
            tsf_mode == o.tsf_mode && active == o.active && phase == o.phase &&
            candidate_category == o.candidate_category &&
            scope_forced_mode == o.scope_forced_mode &&
-           server_ready == o.server_ready;
+           server_ready == o.server_ready &&
+           prefer_kana_input == o.prefer_kana_input &&
+           use_romaji_key_to_toggle_input_style ==
+               o.use_romaji_key_to_toggle_input_style;
   }
 };
 
@@ -193,10 +202,16 @@ class ThreadSlot {
       s->thread_focus_tick_ms = pending_.thread_focus_tick_ms;
       s->first_key_tick_ms = pending_.first_key_tick_ms;
     }
-    if (size_ >= sizeof(TipSharedState)) {
+    if (size_ >= kTipSharedStateV6Size) {
       // Likewise a 144 byte (version 5) block is never touched beyond its end.
       s->key_eaten_count = pending_.key_eaten_count;
       s->key_passed_count = pending_.key_passed_count;
+    }
+    if (size_ >= sizeof(TipSharedState)) {
+      // Likewise a 152 byte (version 6) block is never touched beyond its end.
+      s->prefer_kana_input = pending_.prefer_kana_input;
+      s->use_romaji_key_to_toggle_input_style =
+          pending_.use_romaji_key_to_toggle_input_style;
     }
     ::InterlockedIncrement(seq);  // even: stable (full barrier)
     last_ = pending_;
@@ -225,11 +240,16 @@ class ThreadSlot {
     size_ = sizeof(TipSharedState);
     void* view = ::MapViewOfFile(mapping_, FILE_MAP_WRITE, 0, 0, size_);
     if (view == nullptr && existed) {
-      // A section left by an older DLL has the version 5 size (144), the
-      // version 4 size (112), the version 3 size (80), or the version 2 size
-      // (48). Write that version into it (ADR-267 D9).
-      size_ = kTipSharedStateV5Size;
+      // A section left by an older DLL has the version 6 size (152), the
+      // version 5 size (144), the version 4 size (112), the version 3 size
+      // (80), or the version 2 size (48). Write that version into it
+      // (ADR-267 D9).
+      size_ = kTipSharedStateV6Size;
       view = ::MapViewOfFile(mapping_, FILE_MAP_WRITE, 0, 0, size_);
+      if (view == nullptr) {
+        size_ = kTipSharedStateV5Size;
+        view = ::MapViewOfFile(mapping_, FILE_MAP_WRITE, 0, 0, size_);
+      }
       if (view == nullptr) {
         size_ = kTipSharedStateV4Size;
         view = ::MapViewOfFile(mapping_, FILE_MAP_WRITE, 0, 0, size_);
@@ -253,9 +273,10 @@ class ThreadSlot {
     // The block is zero-filled. seq == 0 means "not published yet"; `magic` is
     // written last so a reader that checks it never sees a half-initialized header.
     // `Get()` writes the version unconditionally, so a 48 byte block must be
-    // labelled 2, an 80 byte block 3, a 112 byte block 4 and a 144 byte block 5, or a reader would
-    // map more than there is.
+    // labelled 2, an 80 byte block 3, a 112 byte block 4, a 144 byte block 5
+    // and a 152 byte block 6, or a reader would map more than there is.
     state_->version = size_ >= sizeof(TipSharedState) ? kTipSharedStateVersion
+                      : size_ >= kTipSharedStateV6Size ? 6
                       : size_ >= kTipSharedStateV5Size ? 5
                       : size_ >= kTipSharedStateV4Size ? 4
                       : size_ >= kTipSharedStateV3Size ? 3
@@ -269,7 +290,7 @@ class ThreadSlot {
 
   HANDLE mapping_ = nullptr;
   TipSharedState* state_ = nullptr;
-  size_t size_ = 0;  // mapped (and writable) size: 144, or 112 / 80 / 48 for an old block
+  size_t size_ = 0;  // mapped (and writable) size: 160, or 152 / 144 / 112 / 80 / 48 for an old block
   bool tried_ = false;
   bool published_ = false;
   Snapshot pending_;
@@ -492,6 +513,15 @@ void TipStatePublisher::NoteThreadFocus() {
 void TipStatePublisher::SetServerReady(bool ready) {
   ThreadSlot& slot = CurrentSlot();
   slot.pending().server_ready = ready ? 1 : 0;
+  if (slot.published() && slot.Flush().pulse) Pulse();
+}
+
+void TipStatePublisher::SetInputStyle(bool prefer_kana_input,
+                                      bool toggle_enabled) {
+  ThreadSlot& slot = CurrentSlot();
+  Snapshot& p = slot.pending();
+  p.prefer_kana_input = prefer_kana_input ? 1 : 0;
+  p.use_romaji_key_to_toggle_input_style = toggle_enabled ? 1 : 0;
   if (slot.published() && slot.Flush().pulse) Pulse();
 }
 

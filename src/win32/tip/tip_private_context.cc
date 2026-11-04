@@ -43,6 +43,7 @@
 #include "win32/base/input_state.h"
 #include "win32/base/keyboard.h"
 #include "win32/base/surrogate_pair_observer.h"
+#include "win32/tip/tip_state_publisher.h"
 #include "win32/tip/tip_text_service.h"
 #include "win32/tip/tip_ui_element_manager.h"
 
@@ -104,6 +105,12 @@ void TipPrivateContext::EnsureInitialized() {
     behavior->use_mode_indicator = snapshot.use_mode_indicator;
     behavior->direct_mode_keys = snapshot.direct_mode_keys;
     behavior->initialized = true;
+    // mozc-readable (version 7, ADR-287 in awase): seed the input-style
+    // signal from the config read above, before any VK_DBE_ROMAN/NOROMAN
+    // flip can happen.
+    TipStatePublisher::SetInputStyle(
+        behavior->prefer_kana_input,
+        behavior->use_romaji_key_to_toggle_input_style);
   }
 }
 
