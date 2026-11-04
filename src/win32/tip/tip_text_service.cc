@@ -741,6 +741,8 @@ class TipTextServiceImpl
 
   // ITfThreadFocusSink
   STDMETHODIMP OnSetThreadFocus() override {
+    // mozc-readable (version 5): when the OS keyboard focus reached this thread.
+    TipStatePublisher::NoteThreadFocus();
     EnsureKanaLockUnlocked();
 
     // A temporary workaround for b/24793812.  When previous attempt to
@@ -787,7 +789,11 @@ class TipTextServiceImpl
   }
 
   // ITfKeyEventSink
-  STDMETHODIMP OnSetFocus(BOOL foreground) override { return S_OK; }
+  STDMETHODIMP OnSetFocus(BOOL foreground) override {
+    // mozc-readable (version 5): when this key sink gained or lost the keyboard focus.
+    TipStatePublisher::NoteKeySinkFocus(foreground != FALSE);
+    return S_OK;
+  }
   STDMETHODIMP OnTestKeyDown(ITfContext* context, WPARAM wparam, LPARAM lparam,
                              BOOL* eaten) override {
     BOOL dummy_eaten = FALSE;

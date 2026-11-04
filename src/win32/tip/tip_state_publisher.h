@@ -51,13 +51,16 @@ namespace win32 {
 namespace tsf {
 
 inline constexpr uint32_t kTipSharedStateMagic = 0x5A52444D;  // 'MDRZ'
-inline constexpr uint32_t kTipSharedStateVersion = 4;
+inline constexpr uint32_t kTipSharedStateVersion = 5;
 // Size of the version 2 layout. A block of this size left by an older DLL is
 // still written (version 2, first 48 bytes only).
 inline constexpr size_t kTipSharedStateV2Size = 48;
 // Size of the version 3 layout (ADR-267). A block of this size left by an older
 // DLL is still written (version 3, first 80 bytes only).
 inline constexpr size_t kTipSharedStateV3Size = 80;
+// Size of the version 4 layout. A block of this size left by an older DLL is
+// still written (version 4, first 112 bytes only).
+inline constexpr size_t kTipSharedStateV4Size = 112;
 
 // Layout is part of the external interface. Append only, bump the version on
 // incompatible changes. All fields are little-endian 32/64-bit integers.
@@ -69,6 +72,10 @@ inline constexpr size_t kTipSharedStateV3Size = 80;
 // Version 4 (diagnostics for "composition is committed on every key", Windows
 // Terminal): 32 bytes appended (offsets 80..111). Offsets 0..79 are unchanged.
 // Counters are monotonic (wrap), written when they change and never pulsed.
+// Version 5 (keyboard-focus timing, for "the first keys after a focus change are not
+// seen by the TIP"): 32 bytes appended (offsets 112..143). Offsets 0..111 are
+// unchanged. The ticks are GetTickCount64() values (0 = never), written when they
+// change and never pulsed.
 // See readable/docs/shared-memory.md for the meaning of each field.
 struct TipSharedState {
   uint32_t magic;           // kTipSharedStateMagic
@@ -100,8 +107,18 @@ struct TipSharedState {
   uint32_t edit_session_fail_count;  // RequestEditSession failed (or its session returned a failure)
   uint32_t diag_flags;               // bit0: use_async_lock_in_key_handler, bit1: an Update saw last_output_is_test (sticky)
   uint32_t update_context_id;        // serial number of the TipPrivateContext TipUiHandler::Update last read (not an address)
+  // ---- version 5 ----
+  uint64_t key_sink_focus_tick_ms;   // ITfKeyEventSink::OnSetFocus(TRUE): this TIP became the keyboard-focused key sink
+  uint64_t key_sink_blur_tick_ms;    // ITfKeyEventSink::OnSetFocus(FALSE)
+  uint64_t thread_focus_tick_ms;     // ITfThreadFocusSink::OnSetThreadFocus (OS keyboard focus reached the thread)
+  uint64_t first_key_tick_ms;        // the first key-down counted after key_sink_focus_tick_ms (0 until one arrives)
 };
-static_assert(sizeof(TipSharedState) == 112, "TipSharedState layout changed");
+static_assert(sizeof(TipSharedState) == 144, "TipSharedState layout changed");
+static_assert(offsetof(TipSharedState, key_sink_focus_tick_ms) ==
+                  kTipSharedStateV4Size,
+              "TipSharedState layout changed");
+static_assert(offsetof(TipSharedState, first_key_tick_ms) == 136,
+              "TipSharedState layout changed");
 static_assert(offsetof(TipSharedState, composition_key_seq) + sizeof(uint32_t) ==
                   kTipSharedStateV3Size,
               "TipSharedState layout changed");
@@ -195,6 +212,14 @@ class TipStatePublisher {
 
   // Records whether the last call to the Mozc server got a response.
   static void SetServerReady(bool ready);
+
+  // Version 5 keyboard-focus timing. Each writes the block when it changes and
+  // never pulses.
+  // ITfKeyEventSink::OnSetFocus. A `foreground` focus also restarts the wait for
+  // the first key-down (first_key_tick_ms is cleared).
+  static void NoteKeySinkFocus(bool foreground);
+  // ITfThreadFocusSink::OnSetThreadFocus.
+  static void NoteThreadFocus();
 };
 
 }  // namespace tsf
