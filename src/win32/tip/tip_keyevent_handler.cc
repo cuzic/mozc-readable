@@ -500,9 +500,11 @@ HRESULT TipKeyeventHandler::OnTestKeyDown(TipTextService* text_service,
   const HRESULT hr =
       OnTestKey(text_service, context, kKeyDown, wparam, lparam, eaten);
   // TSF does not call OnKeyDown for a key that was not eaten.
-  if (FAILED(hr) || eaten == nullptr || !*eaten) {
+  const bool ate = SUCCEEDED(hr) && eaten != nullptr && *eaten;
+  if (!ate) {
     TipStatePublisher::ForgetCountedKeyDown();
   }
+  TipStatePublisher::NoteKeyResult(ate);
   return hr;
 }
 
@@ -515,8 +517,17 @@ HRESULT TipKeyeventHandler::OnTestKeyUp(TipTextService* text_service,
 HRESULT TipKeyeventHandler::OnKeyDown(TipTextService* text_service,
                                       ITfContext* context, WPARAM wparam,
                                       LPARAM lparam, BOOL* eaten) {
-  TipStatePublisher::CountKeyDownUnlessCounted(static_cast<uint32_t>(wparam));
-  return OnKey(text_service, context, kKeyDown, wparam, lparam, eaten);
+  const bool already_counted = TipStatePublisher::CountKeyDownUnlessCounted(
+      static_cast<uint32_t>(wparam));
+  const HRESULT hr =
+      OnKey(text_service, context, kKeyDown, wparam, lparam, eaten);
+  // A key-down counted by OnTestKeyDown / OnPreservedKey already has its result
+  // noted there; only a host that skipped OnTestKeyDown is noted here.
+  if (!already_counted) {
+    TipStatePublisher::NoteKeyResult(SUCCEEDED(hr) && eaten != nullptr &&
+                                     *eaten);
+  }
+  return hr;
 }
 
 HRESULT TipKeyeventHandler::OnKeyUp(TipTextService* text_service,
