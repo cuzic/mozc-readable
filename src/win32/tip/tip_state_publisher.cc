@@ -84,17 +84,16 @@ struct Snapshot {
   uint32_t edit_session_fail_count = 0;
   uint32_t diag_flags = 0;
   uint32_t update_context_id = 0;
-  // Version 5 (never part of SameState: they do not pulse).
+  // Version 5: state (part of SameState, pulses).
+  uint32_t prefer_kana_input = 0;
+  uint32_t use_romaji_key_to_toggle_input_style = 0;
+  // Version 5: diagnostics-only (never part of SameState: they do not pulse).
   uint64_t key_sink_focus_tick_ms = 0;
   uint64_t key_sink_blur_tick_ms = 0;
   uint64_t thread_focus_tick_ms = 0;
   uint64_t first_key_tick_ms = 0;
-  // Version 6 (never part of SameState: they do not pulse).
   uint32_t key_eaten_count = 0;
   uint32_t key_passed_count = 0;
-  // Version 7.
-  uint32_t prefer_kana_input = 0;
-  uint32_t use_romaji_key_to_toggle_input_style = 0;
   // Not published: set by a foreground key sink focus, cleared by the next counted key-down.
   bool awaiting_first_key = false;
   // "Is there anything to write": every published field.
@@ -119,9 +118,9 @@ struct Snapshot {
   // "Should the change event be pulsed": the state fields only. Changes of
   // preedit_utf16_len, preedit_cursor, key_seq and composition_key_seq alone
   // are written without waking the waiters (ADR-267 D6). prefer_kana_input and
-  // use_romaji_key_to_toggle_input_style are treated as state (like
-  // effective_mode): a flip is exactly the event ADR-287 wants observers to
-  // wake up for.
+  // use_romaji_key_to_toggle_input_style (version 5) are treated as state (like
+  // effective_mode): a flip is exactly the event ADR-287 (awase) wants
+  // observers to wake up for.
   bool SameState(const Snapshot& o) const {
     return effective_open == o.effective_open &&
            effective_mode == o.effective_mode && tsf_open == o.tsf_open &&
@@ -195,23 +194,20 @@ class ThreadSlot {
       s->diag_flags = pending_.diag_flags;
       s->update_context_id = pending_.update_context_id;
     }
-    if (size_ >= kTipSharedStateV5Size) {
-      // Likewise a 112 byte (version 4) block is never touched beyond its end.
+    if (size_ >= sizeof(TipSharedState)) {
+      // Likewise a 112 byte (version 4) block is never touched beyond its end
+      // (ADR-267 D9). All of version 5 (state + diagnostics) is one size: it was
+      // never released at an intermediate size, so there is no partial-version-5
+      // block to preserve (unlike versions 2/3/4, see the header comment).
+      s->prefer_kana_input = pending_.prefer_kana_input;
+      s->use_romaji_key_to_toggle_input_style =
+          pending_.use_romaji_key_to_toggle_input_style;
       s->key_sink_focus_tick_ms = pending_.key_sink_focus_tick_ms;
       s->key_sink_blur_tick_ms = pending_.key_sink_blur_tick_ms;
       s->thread_focus_tick_ms = pending_.thread_focus_tick_ms;
       s->first_key_tick_ms = pending_.first_key_tick_ms;
-    }
-    if (size_ >= kTipSharedStateV6Size) {
-      // Likewise a 144 byte (version 5) block is never touched beyond its end.
       s->key_eaten_count = pending_.key_eaten_count;
       s->key_passed_count = pending_.key_passed_count;
-    }
-    if (size_ >= sizeof(TipSharedState)) {
-      // Likewise a 152 byte (version 6) block is never touched beyond its end.
-      s->prefer_kana_input = pending_.prefer_kana_input;
-      s->use_romaji_key_to_toggle_input_style =
-          pending_.use_romaji_key_to_toggle_input_style;
     }
     ::InterlockedIncrement(seq);  // even: stable (full barrier)
     last_ = pending_;
@@ -240,20 +236,14 @@ class ThreadSlot {
     size_ = sizeof(TipSharedState);
     void* view = ::MapViewOfFile(mapping_, FILE_MAP_WRITE, 0, 0, size_);
     if (view == nullptr && existed) {
-      // A section left by an older DLL has the version 6 size (152), the
-      // version 5 size (144), the version 4 size (112), the version 3 size
-      // (80), or the version 2 size (48). Write that version into it
+      // A section left by an older DLL has the version 4 size (112, the last
+      // actually-released layout), the version 3 size (80), or the version 2
+      // size (48). (Versions "5/6/7" were never released at an intermediate
+      // size before being consolidated into this single version 5, so there
+      // is no such fallback size to try.) Write that version into it
       // (ADR-267 D9).
-      size_ = kTipSharedStateV6Size;
+      size_ = kTipSharedStateV4Size;
       view = ::MapViewOfFile(mapping_, FILE_MAP_WRITE, 0, 0, size_);
-      if (view == nullptr) {
-        size_ = kTipSharedStateV5Size;
-        view = ::MapViewOfFile(mapping_, FILE_MAP_WRITE, 0, 0, size_);
-      }
-      if (view == nullptr) {
-        size_ = kTipSharedStateV4Size;
-        view = ::MapViewOfFile(mapping_, FILE_MAP_WRITE, 0, 0, size_);
-      }
       if (view == nullptr) {
         size_ = kTipSharedStateV3Size;
         view = ::MapViewOfFile(mapping_, FILE_MAP_WRITE, 0, 0, size_);
@@ -273,11 +263,9 @@ class ThreadSlot {
     // The block is zero-filled. seq == 0 means "not published yet"; `magic` is
     // written last so a reader that checks it never sees a half-initialized header.
     // `Get()` writes the version unconditionally, so a 48 byte block must be
-    // labelled 2, an 80 byte block 3, a 112 byte block 4, a 144 byte block 5
-    // and a 152 byte block 6, or a reader would map more than there is.
+    // labelled 2, an 80 byte block 3 and a 112 byte block 4, or a reader would
+    // map more than there is.
     state_->version = size_ >= sizeof(TipSharedState) ? kTipSharedStateVersion
-                      : size_ >= kTipSharedStateV6Size ? 6
-                      : size_ >= kTipSharedStateV5Size ? 5
                       : size_ >= kTipSharedStateV4Size ? 4
                       : size_ >= kTipSharedStateV3Size ? 3
                                                        : 2;
@@ -290,7 +278,7 @@ class ThreadSlot {
 
   HANDLE mapping_ = nullptr;
   TipSharedState* state_ = nullptr;
-  size_t size_ = 0;  // mapped (and writable) size: 160, or 152 / 144 / 112 / 80 / 48 for an old block
+  size_t size_ = 0;  // mapped (and writable) size: 160, or 112 / 80 / 48 for an old block
   bool tried_ = false;
   bool published_ = false;
   Snapshot pending_;
