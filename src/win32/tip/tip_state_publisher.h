@@ -51,7 +51,7 @@ namespace win32 {
 namespace tsf {
 
 inline constexpr uint32_t kTipSharedStateMagic = 0x5A52444D;  // 'MDRZ'
-inline constexpr uint32_t kTipSharedStateVersion = 7;
+inline constexpr uint32_t kTipSharedStateVersion = 5;
 // Size of the version 2 layout. A block of this size left by an older DLL is
 // still written (version 2, first 48 bytes only).
 inline constexpr size_t kTipSharedStateV2Size = 48;
@@ -59,14 +59,10 @@ inline constexpr size_t kTipSharedStateV2Size = 48;
 // DLL is still written (version 3, first 80 bytes only).
 inline constexpr size_t kTipSharedStateV3Size = 80;
 // Size of the version 4 layout. A block of this size left by an older DLL is
-// still written (version 4, first 112 bytes only).
+// still written (version 4, first 112 bytes only). This is the layout of the
+// latest actually-released build (v3.35.6354-readable.1) -- offsets 0..111 are
+// frozen and must never be reordered or reused.
 inline constexpr size_t kTipSharedStateV4Size = 112;
-// Size of the version 5 layout. A block of this size left by an older DLL is
-// still written (version 5, first 144 bytes only).
-inline constexpr size_t kTipSharedStateV5Size = 144;
-// Size of the version 6 layout. A block of this size left by an older DLL is
-// still written (version 6, first 152 bytes only).
-inline constexpr size_t kTipSharedStateV6Size = 152;
 
 // Layout is part of the external interface. Append only, bump the version on
 // incompatible changes. All fields are little-endian 32/64-bit integers.
@@ -78,21 +74,29 @@ inline constexpr size_t kTipSharedStateV6Size = 152;
 // Version 4 (diagnostics for "composition is committed on every key", Windows
 // Terminal): 32 bytes appended (offsets 80..111). Offsets 0..79 are unchanged.
 // Counters are monotonic (wrap), written when they change and never pulsed.
-// Version 5 (keyboard-focus timing, for "the first keys after a focus change are not
-// seen by the TIP"): 32 bytes appended (offsets 112..143). Offsets 0..111 are
-// unchanged. The ticks are GetTickCount64() values (0 = never), written when they
-// change and never pulsed.
-// Version 6 (key_eaten_count/key_passed_count, diagnostics): 8 bytes appended
-// (offsets 144..151). Offsets 0..143 are unchanged.
-// Version 7 (input style, for "awase's sent romaji is read back as JIS kana
-// direct input", see awase's ADR-287): 8 bytes appended (offsets 152..159).
-// Offsets 0..151 are unchanged. `prefer_kana_input` is the raw value of the
-// focused edit context's InputBehavior::prefer_kana_input (not an OS keyboard
-// lock bit) -- whether Mozc itself currently reads keystrokes as kana direct
-// input instead of romaji. It can flip without any config dialog change: see
-// `use_romaji_key_to_toggle_input_style`/VK_DBE_ROMAN/VK_DBE_NOROMAN in
-// win32/base/keyevent_handler.cc. Written when either field changes; pulses
-// the change event (treated as state, like effective_mode).
+//
+// Version 5 (offsets 112..159, 48 bytes appended; offsets 0..111 unchanged):
+// what had briefly been three separate versions (5/6/7) on an unreleased branch
+// got consolidated into this single version before its first release, grouped
+// state-first then diagnostics-only (no released build ever shipped the old
+// 5/6/7 layout, so there was nothing to preserve -- see
+// readable/docs/shared-memory.md changelog):
+// - `prefer_kana_input`/`use_romaji_key_to_toggle_input_style` (offsets
+//   112..119): Mozc's own input style (romaji vs. JIS kana direct input,
+//   *not* an OS keyboard lock bit -- see awase's ADR-287). `prefer_kana_input`
+//   is the raw value of the focused edit context's
+//   InputBehavior::prefer_kana_input; it can flip without any config dialog
+//   change, see `use_romaji_key_to_toggle_input_style`/VK_DBE_ROMAN/
+//   VK_DBE_NOROMAN in win32/base/keyevent_handler.cc. Treated as state (like
+//   effective_mode): written and pulses the change event when either value
+//   changes.
+// - keyboard-focus timing (offsets 120..151, for "the first keys after a focus
+//   change are not seen by the TIP"): `key_sink_focus_tick_ms`,
+//   `key_sink_blur_tick_ms`, `thread_focus_tick_ms`, `first_key_tick_ms`. The
+//   ticks are GetTickCount64() values (0 = never). Diagnostics-only: written
+//   when they change, never pulsed.
+// - `key_eaten_count`/`key_passed_count` (offsets 152..159, diagnostics-only,
+//   never pulsed): key-downs the key sink ate vs. passed to the app.
 // See readable/docs/shared-memory.md for the meaning of each field.
 struct TipSharedState {
   uint32_t magic;           // kTipSharedStateMagic
@@ -124,27 +128,24 @@ struct TipSharedState {
   uint32_t edit_session_fail_count;  // RequestEditSession failed (or its session returned a failure)
   uint32_t diag_flags;               // bit0: use_async_lock_in_key_handler, bit1: an Update saw last_output_is_test (sticky)
   uint32_t update_context_id;        // serial number of the TipPrivateContext TipUiHandler::Update last read (not an address)
-  // ---- version 5 ----
+  // ---- version 5 (state first, then diagnostics-only; see comment above) ----
+  uint32_t prefer_kana_input;                      // 0/1: InputBehavior::prefer_kana_input of the focused edit context (0=romaji, 1=JIS kana direct input)
+  uint32_t use_romaji_key_to_toggle_input_style;    // 0/1: config use_keyboard_to_change_preedit_method (VK_DBE_ROMAN/NOROMAN flips prefer_kana_input when 1)
   uint64_t key_sink_focus_tick_ms;   // ITfKeyEventSink::OnSetFocus(TRUE): this TIP became the keyboard-focused key sink
   uint64_t key_sink_blur_tick_ms;    // ITfKeyEventSink::OnSetFocus(FALSE)
   uint64_t thread_focus_tick_ms;     // ITfThreadFocusSink::OnSetThreadFocus (OS keyboard focus reached the thread)
   uint64_t first_key_tick_ms;        // the first key-down counted after key_sink_focus_tick_ms (0 until one arrives)
-  // ---- version 6 ----
   uint32_t key_eaten_count;          // key-downs counted in key_seq that the key sink ate (eaten = TRUE)
   uint32_t key_passed_count;         // key-downs counted in key_seq that the key sink did not eat (passed to the app)
-  // ---- version 7 ----
-  uint32_t prefer_kana_input;                      // 0/1: InputBehavior::prefer_kana_input of the focused edit context (0=romaji, 1=JIS kana direct input)
-  uint32_t use_romaji_key_to_toggle_input_style;    // 0/1: config use_keyboard_to_change_preedit_method (VK_DBE_ROMAN/NOROMAN flips prefer_kana_input when 1)
 };
 static_assert(sizeof(TipSharedState) == 160, "TipSharedState layout changed");
-static_assert(offsetof(TipSharedState, prefer_kana_input) == kTipSharedStateV6Size,
+static_assert(offsetof(TipSharedState, prefer_kana_input) == kTipSharedStateV4Size,
               "TipSharedState layout changed");
-static_assert(offsetof(TipSharedState, key_eaten_count) == kTipSharedStateV5Size,
+static_assert(offsetof(TipSharedState, key_sink_focus_tick_ms) == 120,
               "TipSharedState layout changed");
-static_assert(offsetof(TipSharedState, key_sink_focus_tick_ms) ==
-                  kTipSharedStateV4Size,
+static_assert(offsetof(TipSharedState, key_eaten_count) == 152,
               "TipSharedState layout changed");
-static_assert(offsetof(TipSharedState, first_key_tick_ms) == 136,
+static_assert(offsetof(TipSharedState, first_key_tick_ms) == 144,
               "TipSharedState layout changed");
 static_assert(offsetof(TipSharedState, composition_key_seq) + sizeof(uint32_t) ==
                   kTipSharedStateV3Size,
@@ -227,7 +228,7 @@ class TipStatePublisher {
   // OnPreservedKey found no such preserved key).
   static void ForgetCountedKeyDown();
 
-  // Version 6: the outcome of one counted key-down (eaten by the key sink, or
+  // Version 5: the outcome of one counted key-down (eaten by the key sink, or
   // passed to the application). Exactly one call per key_seq increment, so that
   // key_eaten_count + key_passed_count == key_seq for the keys counted since
   // the TIP loaded. The outcome is the one OnTestKeyDown returned, or OnKeyDown's
@@ -257,7 +258,7 @@ class TipStatePublisher {
   // ITfThreadFocusSink::OnSetThreadFocus.
   static void NoteThreadFocus();
 
-  // Version 7: the focused edit context's input style (InputBehavior::
+  // Version 5: the focused edit context's input style (InputBehavior::
   // prefer_kana_input) and whether VK_DBE_ROMAN/VK_DBE_NOROMAN can flip it
   // (use_keyboard_to_change_preedit_method). Called both when the config is
   // first read (TipPrivateContext::EnsureInitialized) and whenever the key
