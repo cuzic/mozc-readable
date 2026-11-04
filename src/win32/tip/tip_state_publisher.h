@@ -51,7 +51,7 @@ namespace win32 {
 namespace tsf {
 
 inline constexpr uint32_t kTipSharedStateMagic = 0x5A52444D;  // 'MDRZ'
-inline constexpr uint32_t kTipSharedStateVersion = 6;
+inline constexpr uint32_t kTipSharedStateVersion = 7;
 // Size of the version 2 layout. A block of this size left by an older DLL is
 // still written (version 2, first 48 bytes only).
 inline constexpr size_t kTipSharedStateV2Size = 48;
@@ -64,6 +64,9 @@ inline constexpr size_t kTipSharedStateV4Size = 112;
 // Size of the version 5 layout. A block of this size left by an older DLL is
 // still written (version 5, first 144 bytes only).
 inline constexpr size_t kTipSharedStateV5Size = 144;
+// Size of the version 6 layout. A block of this size left by an older DLL is
+// still written (version 6, first 152 bytes only).
+inline constexpr size_t kTipSharedStateV6Size = 152;
 
 // Layout is part of the external interface. Append only, bump the version on
 // incompatible changes. All fields are little-endian 32/64-bit integers.
@@ -79,6 +82,17 @@ inline constexpr size_t kTipSharedStateV5Size = 144;
 // seen by the TIP"): 32 bytes appended (offsets 112..143). Offsets 0..111 are
 // unchanged. The ticks are GetTickCount64() values (0 = never), written when they
 // change and never pulsed.
+// Version 6 (key_eaten_count/key_passed_count, diagnostics): 8 bytes appended
+// (offsets 144..151). Offsets 0..143 are unchanged.
+// Version 7 (input style, for "awase's sent romaji is read back as JIS kana
+// direct input", see awase's ADR-287): 8 bytes appended (offsets 152..159).
+// Offsets 0..151 are unchanged. `prefer_kana_input` is the raw value of the
+// focused edit context's InputBehavior::prefer_kana_input (not an OS keyboard
+// lock bit) -- whether Mozc itself currently reads keystrokes as kana direct
+// input instead of romaji. It can flip without any config dialog change: see
+// `use_romaji_key_to_toggle_input_style`/VK_DBE_ROMAN/VK_DBE_NOROMAN in
+// win32/base/keyevent_handler.cc. Written when either field changes; pulses
+// the change event (treated as state, like effective_mode).
 // See readable/docs/shared-memory.md for the meaning of each field.
 struct TipSharedState {
   uint32_t magic;           // kTipSharedStateMagic
@@ -118,8 +132,13 @@ struct TipSharedState {
   // ---- version 6 ----
   uint32_t key_eaten_count;          // key-downs counted in key_seq that the key sink ate (eaten = TRUE)
   uint32_t key_passed_count;         // key-downs counted in key_seq that the key sink did not eat (passed to the app)
+  // ---- version 7 ----
+  uint32_t prefer_kana_input;                      // 0/1: InputBehavior::prefer_kana_input of the focused edit context (0=romaji, 1=JIS kana direct input)
+  uint32_t use_romaji_key_to_toggle_input_style;    // 0/1: config use_keyboard_to_change_preedit_method (VK_DBE_ROMAN/NOROMAN flips prefer_kana_input when 1)
 };
-static_assert(sizeof(TipSharedState) == 152, "TipSharedState layout changed");
+static_assert(sizeof(TipSharedState) == 160, "TipSharedState layout changed");
+static_assert(offsetof(TipSharedState, prefer_kana_input) == kTipSharedStateV6Size,
+              "TipSharedState layout changed");
 static_assert(offsetof(TipSharedState, key_eaten_count) == kTipSharedStateV5Size,
               "TipSharedState layout changed");
 static_assert(offsetof(TipSharedState, key_sink_focus_tick_ms) ==
@@ -237,6 +256,14 @@ class TipStatePublisher {
   static void NoteKeySinkFocus(bool foreground);
   // ITfThreadFocusSink::OnSetThreadFocus.
   static void NoteThreadFocus();
+
+  // Version 7: the focused edit context's input style (InputBehavior::
+  // prefer_kana_input) and whether VK_DBE_ROMAN/VK_DBE_NOROMAN can flip it
+  // (use_keyboard_to_change_preedit_method). Called both when the config is
+  // first read (TipPrivateContext::EnsureInitialized) and whenever the key
+  // handler flips prefer_kana_input (win32/base/keyevent_handler.cc). Written
+  // when either value changes; pulses the change event.
+  static void SetInputStyle(bool prefer_kana_input, bool toggle_enabled);
 };
 
 }  // namespace tsf
