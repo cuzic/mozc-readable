@@ -1,0 +1,107 @@
+name: readable release
+
+# readable-build.yaml(ビルドとインストール検証)が `sync/<タグ>` ブランチで成功したら、
+# その MSI を GitHub Release として公開し、readable ブランチをそのコミットへ進める。
+# タグは `v<upstream の版>-readable.<N>`(例: v3.34.6239-readable.1)。awase.cc のダウンロード欄は
+# この Release の最新を参照する。
+
+on:
+  workflow_run:
+    workflows: ['readable build (x64 MSI)']
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: '公開する readable-build.yaml の run ID(sync/ ブランチの成功した run)'
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: readable-release
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      GH_TOKEN: ${{ secrets.SYNC_TOKEN }}
+    steps:
+      - name: Resolve the build run
+        id: run
+        env:
+          EVENT_RUN_ID: ${{ github.event.workflow_run.id }}
+          INPUT_RUN_ID: ${{ github.event.inputs.run_id }}
+        run: |
+          set -euo pipefail
+          [ -n "$GH_TOKEN" ] || { echo "::error::Secret SYNC_TOKEN is not set"; exit 1; }
+          RUN_ID="${INPUT_RUN_ID:-$EVENT_RUN_ID}"
+          J=$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${RUN_ID}")
+          BRANCH=$(jq -r .head_branch <<<"$J")
+          CONCL=$(jq -r .conclusion <<<"$J")
+          SHA=$(jq -r .head_sha <<<"$J")
+          case "$BRANCH" in sync/*) ;; *) echo "not a sync branch ($BRANCH), nothing to do"; echo "go=false" >> "$GITHUB_OUTPUT"; exit 0 ;; esac
+          [ "$CONCL" = success ] || { echo "build conclusion is $CONCL, nothing to do"; echo "go=false" >> "$GITHUB_OUTPUT"; exit 0 ; }
+          echo "go=true" >> "$GITHUB_OUTPUT"
+          echo "run_id=$RUN_ID" >> "$GITHUB_OUTPUT"
+          echo "sha=$SHA" >> "$GITHUB_OUTPUT"
+          echo "upstream=${BRANCH#sync/}" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout
+        if: steps.run.outputs.go == 'true'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          ref: ${{ steps.run.outputs.sha }}
+          fetch-depth: 0
+          submodules: false
+          token: ${{ secrets.SYNC_TOKEN }}
+
+      - name: Download the MSI
+        if: steps.run.outputs.go == 'true'
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
+        with:
+          name: Mozc64_x64.msi
+          path: msi
+          run-id: ${{ steps.run.outputs.run_id }}
+          github-token: ${{ secrets.SYNC_TOKEN }}
+
+      - name: Publish the release
+        if: steps.run.outputs.go == 'true'
+        id: release
+        run: |
+          set -euo pipefail
+          UP="${{ steps.run.outputs.upstream }}"
+          SHA="${{ steps.run.outputs.sha }}"
+          N=1
+          while gh release view "v${UP}-readable.${N}" >/dev/null 2>&1; do N=$((N+1)); done
+          TAG="v${UP}-readable.${N}"
+          ASSET="mozc-readable-${UP}-readable.${N}-x64.msi"
+          cp msi/Mozc64.msi "$ASSET"
+          sha256sum "$ASSET" > SHA256SUMS.txt
+          cat > notes.md <<EOF
+          upstream [google/mozc ${UP}](https://github.com/google/mozc/releases/tag/${UP}) に、IME の開閉・入力モードを共有メモリへ書き出す変更を載せたビルドです。
+          公式の Mozc とは別名(別 CLSID・別プロダクト)で、同時にインストールできます。署名はありません(SmartScreen の警告が出ます)。
+          SHA-256 は SHA256SUMS.txt を参照してください。
+          EOF
+          gh release create "$TAG" "$ASSET" SHA256SUMS.txt --target "$SHA" \
+            --title "mozc-readable ${UP}-readable.${N}" --notes-file notes.md
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Advance readable
+        if: steps.run.outputs.go == 'true'
+        run: |
+          set -euo pipefail
+          UP="${{ steps.run.outputs.upstream }}"
+          SHA="${{ steps.run.outputs.sha }}"
+          git fetch origin readable "sync-base/${UP}"
+          CUR=$(git rev-parse origin/readable)
+          BASE=$(git rev-parse "origin/sync-base/${UP}")
+          if [ "$CUR" = "$BASE" ]; then
+            git push --force-with-lease="readable:${CUR}" origin "${SHA}:refs/heads/readable"
+            git push origin --delete "sync/${UP}" "sync-base/${UP}"
+          else
+            gh issue create --title "readable が ${UP} への載せ替え中に動いたため、readable を進めませんでした" \
+              --body "Release ${{ steps.release.outputs.tag }} は公開済みです。readable は載せ替え開始時(${BASE})から ${CUR} へ進んでいるため自動では上書きしていません。\`sync/${UP}\` へ readable の差分を取り込んでください。"
+          fi
