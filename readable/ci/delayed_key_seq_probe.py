@@ -196,7 +196,7 @@ def main():
     # Leave a marker for "text that existed before any of this" in the document, like あ in
     # pseudo_mozc_sweep.rs's run_case (doc = "あ"). ASCII so get_text() comparisons are unambiguous.
     u32.SendMessageW(edit, 0x000C, 0, "PRE")  # WM_SETTEXT
-    u32.SendMessageW(edit, 0x00B1, -1, -1)  # EM_SETSEL: caret to the end
+    u32.SendMessageW(edit, 0x00B1, -1, 0)  # EM_SETSEL(-1, 0): caret to the end (MSDN; (-1,-1) does not)
 
     # ---- turn the IME on (F2, same binding composition_probe.py uses) and confirm.
     before = read(tid)
