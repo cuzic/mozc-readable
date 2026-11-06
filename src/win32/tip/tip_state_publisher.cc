@@ -33,6 +33,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <string>
 
 #include "base/win32/win_sandbox.h"
@@ -44,6 +45,29 @@ namespace {
 
 constexpr wchar_t kEventName[] = L"Local\\mozc-readable-ime-changed";
 constexpr wchar_t kMappingPrefix[] = L"Local\\mozc-readable-ime-";
+
+// EXPERIMENTAL, CI-only (awase exp/mozc-chrome-compose-queue, 2026-11-06): when set to "1",
+// Flush() withholds every publish for a thread until the *second* key-down this thread counts
+// (see ThreadSlot::ArmCiKeySeqSuppressionIfFirstKey / suppress_until_key_seq_ below). Real
+// processing (the server round trip, the edit session, Chrome's own TSF text store) is untouched
+// and keeps running on its normal timing; only what readers can observe through this shared
+// memory is held back. This deliberately reproduces, on demand and without depending on Chrome's
+// own cold-start timing, the symptom awase sees from a slow TIP (key_seq/phase frozen past the
+// compose-check deadline) so a CI probe can check whether the Backspace+resend recovery still
+// ends correct against a *real* Chrome + Mozc session (not just the `pseudo_mozc.rs` simulation).
+// Never read outside this translation unit; never set outside a CI job.
+bool CiDelayFirstKeyPublishEnabled() {
+  static const bool enabled = [] {
+    // `GetEnvironmentVariableW` (not `std::getenv`): the CI driver (a Python process the TIP DLL
+    // is loaded into) sets this after process start, possibly through a different CRT instance
+    // than this DLL's. `std::getenv` can see a stale, load-time-cached copy in that situation;
+    // the raw Win32 API always queries the live, process-wide environment block.
+    wchar_t buf[4] = {};
+    const DWORD n = ::GetEnvironmentVariableW(L"MOZC_CI_DELAY_FIRST_KEY_PUBLISH", buf, 4);
+    return n == 1 && buf[0] == L'1';
+  }();
+  return enabled;
+}
 
 HANDLE GetChangeEvent() {
   // The handle is intentionally kept for the lifetime of the process.
@@ -155,11 +179,30 @@ class ThreadSlot {
 
   bool published() const { return published_; }
 
+  // EXPERIMENTAL, CI-only: called from BumpKeySeq() right after it increments `pending_.key_seq`.
+  // The very first key-down this thread ever counts arms the suppression (withhold Flush() until
+  // the key_seq this call just produced has been superseded by a later one, i.e. until the next
+  // key-down is counted). A no-op unless `CiDelayFirstKeyPublishEnabled()`.
+  void ArmCiKeySeqSuppressionIfFirstKey(uint32_t key_seq_after_bump) {
+    if (!CiDelayFirstKeyPublishEnabled() || ci_suppression_armed_) {
+      return;
+    }
+    ci_suppression_armed_ = true;
+    suppress_until_key_seq_ = key_seq_after_bump + 1;
+  }
+
   // Writes `pending_` to the shared block unless it already holds exactly that
   // (`wrote`). The caller pulses the event only when `pulse` is set: the first
   // write, or a change of the state fields (the write and the pulse are decided
   // separately, ADR-267 D6).
   FlushResult Flush() {
+    // EXPERIMENTAL, CI-only (see ArmCiKeySeqSuppressionIfFirstKey): every field this call would
+    // write stays exactly as a reader already saw it, as if nothing happened yet. `pending_`
+    // itself is untouched by this -- real processing (composing, the edit session) keeps running;
+    // only this thread's *visibility* to readers is held back.
+    if (suppress_until_key_seq_.has_value() && pending_.key_seq < *suppress_until_key_seq_) {
+      return {};
+    }
     TipSharedState* s = Get();
     if (s == nullptr) return {};
     if (published_ && last_ == pending_) return {};
@@ -283,6 +326,9 @@ class ThreadSlot {
   bool published_ = false;
   Snapshot pending_;
   Snapshot last_;
+  // EXPERIMENTAL, CI-only (see ArmCiKeySeqSuppressionIfFirstKey / Flush()).
+  bool ci_suppression_armed_ = false;
+  std::optional<uint32_t> suppress_until_key_seq_;
 };
 
 ThreadSlot& CurrentSlot() {
@@ -389,6 +435,7 @@ void BumpKeySeq() {
   ThreadSlot& slot = CurrentSlot();
   Snapshot& p = slot.pending();
   ++p.key_seq;
+  slot.ArmCiKeySeqSuppressionIfFirstKey(p.key_seq);  // EXPERIMENTAL, CI-only; no-op otherwise.
   if (p.awaiting_first_key) {
     // The first key-down the TIP sees after it became the keyboard-focused key sink (version 5).
     p.first_key_tick_ms = ::GetTickCount64();

@@ -10,6 +10,13 @@
 #   of its own),
 #   composition = J (the version 3 fields, ADR-267: composition_probe.py; it starts cold on purpose (no warm-up) to
 #   observe server_ready, and ends with a layout switch, so it too has a runner of its own).
+#   delaykeyseq = K (EXPERIMENTAL, one-off, awase exp/mozc-chrome-compose-queue 2026-11-06:
+#   delayed_key_seq_probe.py. Sets MOZC_CI_DELAY_FIRST_KEY_PUBLISH=1 to make this TIP withhold
+#   publishing the first key it counts, reproducing on demand the symptom awase's compose-check
+#   reacts to on a slow TIP (key_seq/phase frozen past the deadline), then drives the exact
+#   Backspace(1)+resend recovery awase's FSM would send and checks the real result. See the probe's
+#   module docstring for why. Remove this section once the result is recorded (one-off-verification-
+#   workflows.md): either in docs/known-bugs or an ADR in the awase repo, or by dropping the idea.)
 #   'all' runs everything in this order, as before.
 # Where a new scenario goes: one that only needs the TIP loaded goes in the section that matches what it
 # looks at (state: shared-memory values and latency; apps: ordinary foreground apps; appcontainer: inside an
@@ -18,7 +25,7 @@
 # like deactivation, so it runs on a separate runner. When you add a section, change the ValidateSet below
 # and `matrix.section` in .github/workflows/readable-build.yaml together.
 param([Parameter(Mandatory)][string]$Msi,
-      [ValidateSet('all', 'state', 'apps', 'appcontainer', 'config', 'deactivation', 'composition')][string]$Section = 'all')
+      [ValidateSet('all', 'state', 'apps', 'appcontainer', 'config', 'deactivation', 'composition', 'delaykeyseq')][string]$Section = 'all')
 $ErrorActionPreference = 'Stop'
 $Clsid   = '{AFC94560-63DA-488E-9227-B04F3EF34B5B}'
 $Profile = '{7D7B9A38-A0A4-4390-9706-509E98A8C791}'
@@ -112,7 +119,7 @@ function Run-Scenario($name, $readerMode, $keys) {
 # key (IME on) was lost on all 3 tries (runs 39099740462 and 39100514498, 'all steps reached' was NO).
 # 'deactivation' has its own scenario and does not need it.
 # 'composition' starts cold on purpose (server_ready, ADR-267 D10).
-if ($Section -notin 'deactivation', 'composition') { $null = Run-Scenario 'warmup' '' 'F2=1:1,19=0:*' }
+if ($Section -notin 'deactivation', 'composition', 'delaykeyseq') { $null = Run-Scenario 'warmup' '' 'F2=1:1,19=0:*' }
 
 if (Want 'state') {
 $poll = Run-Scenario 'poll' '' $keys
@@ -251,6 +258,22 @@ Remove-Item Env:\MOZC_CI_DEACTIVATE
 Get-Content $cpOut, "$cpOut.err" -ErrorAction SilentlyContinue | Out-Host
 Check 'composition_probe.py ran to the end' ($cp.HasExited -and $cp.ExitCode -eq 0) "(exit $($cp.ExitCode))"
 foreach ($line in (Get-Content $cpOut -ErrorAction SilentlyContinue)) {
+  if ($line -match '^probe: (HARD|SOFT) (.+) ok=(True|False)') {
+    if ($Matches[1] -eq 'HARD') { Check $Matches[2] ($Matches[3] -eq 'True') } else { Soft $Matches[2] ($Matches[3] -eq 'True') }
+  }
+}
+}
+
+if (Want 'delaykeyseq') {
+Write-Host '== K. EXPERIMENTAL (awase exp/mozc-chrome-compose-queue, one-off): delayed_key_seq_probe.py'
+$tidFile = Join-Path $tmp 'tid_delaykeyseq.txt'
+$dpOut = Join-Path $tmp 'delaykeyseq.out'
+# MOZC_CI_DELAY_FIRST_KEY_PUBLISH is set by the probe script itself (before the TIP can load), not here.
+$dp = Start-Process python -ArgumentList "`"$here\delayed_key_seq_probe.py`" `"$tidFile`"" -PassThru -NoNewWindow -RedirectStandardOutput $dpOut -RedirectStandardError "$dpOut.err"
+if (-not $dp.WaitForExit(60000)) { Write-Host '::warning::delayed_key_seq_probe.py did not finish in 60 s; killing it'; $dp.Kill() }
+Get-Content $dpOut, "$dpOut.err" -ErrorAction SilentlyContinue | Out-Host
+Check 'delayed_key_seq_probe.py ran to the end' ($dp.HasExited -and $dp.ExitCode -eq 0) "(exit $($dp.ExitCode))"
+foreach ($line in (Get-Content $dpOut -ErrorAction SilentlyContinue)) {
   if ($line -match '^probe: (HARD|SOFT) (.+) ok=(True|False)') {
     if ($Matches[1] -eq 'HARD') { Check $Matches[2] ($Matches[3] -eq 'True') } else { Soft $Matches[2] ($Matches[3] -eq 'True') }
   }
