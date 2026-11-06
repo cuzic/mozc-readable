@@ -10,15 +10,20 @@ session.cc and concluded Backspace is safe either way (consumed by the composer 
 through to the app only if not) -- but that conclusion was never checked against a live TIP, only
 against the source. Reproducing Chrome's actual cold-start timing in CI is not guaranteed (a CI runner's
 Chrome may not exhibit the same delay as a real desktop), so instead this probe makes *this* TIP itself
-lie about its own state for one key: `MOZC_CI_DELAY_FIRST_KEY_PUBLISH=1` (read once, by
-TipStatePublisher::CiDelayFirstKeyPublishEnabled in tip_state_publisher.cc) makes Flush() withhold every
-publish for the first key this thread counts until the *second* key-down is counted. Real processing
-(the server round trip, the edit session, the composition) proceeds immediately and normally underneath
--- only what a reader can observe through the shared memory is held back. This reproduces exactly the
+lie about its own state for one key: `MOZC_CI_DELAY_AT_KEY_SEQ=<N>` (read fresh on every call, by
+TipStatePublisher::CiKeySeqToDelay in tip_state_publisher.cc) makes Flush() withhold every publish from
+the moment this thread's key_seq reaches N until the *next* key-down is counted. Real processing (the
+server round trip, the edit session, the composition) proceeds immediately and normally underneath --
+only what a reader can observe through the shared memory is held back. This reproduces exactly the
 symptom awase's compose-check reacts to (key_seq/phase frozen past the deadline) without depending on
 Chrome's own timing, and lets this probe drive the *exact* recovery awase's FSM would send
 (Backspace x1, no Escape, full resend -- mozc_compose_check_fsm.rs's Literal verdict handling) against
 a real TIP + real Mozc server, then check the real resulting text.
+
+N is a specific key_seq value, not just "the first key", because this probe needs a setup key first
+(F2, to turn the IME on) whose publish must not be suppressed -- it reads key_seq after F2, sets N to
+that value + 1 (the 'k' it is about to send), *then* sends 'k'. The hook is re-read fresh on every
+BumpKeySeq, not cached at process start, specifically so it can be set this late.
 
 This is a plain EDIT control, not an actual Chrome window (see the module docstring above for why: the
 Backspace/Escape behavior this checks is in Mozc's own session.cc, not in any Chrome-specific TSF text
@@ -28,8 +33,7 @@ the browser as a command -- does not apply here, since the real FSM never sends 
 Chrome itself should still be checked before relying on the conclusion for Chrome specifically.
 
 Usage: delayed_key_seq_probe.py <tid_file>
-Exit code 0 iff every HARD check passed. Env MOZC_CI_DELAY_FIRST_KEY_PUBLISH is set by this script
-itself (not by the caller) so it is active from before the TIP loads.
+Exit code 0 iff every HARD check passed.
 """
 import ctypes
 import ctypes.wintypes as wt
@@ -38,8 +42,6 @@ import os
 import struct
 import sys
 import time
-
-os.environ["MOZC_CI_DELAY_FIRST_KEY_PUBLISH"] = "1"
 
 u32 = ctypes.windll.user32
 k32 = ctypes.windll.kernel32
@@ -176,8 +178,7 @@ def main():
     tid = k32.GetCurrentThreadId()
     with open(tid_file, "w") as f:
         f.write(str(tid))
-    print(f"probe: info tid={tid} hwnd={(hwnd or 0):#x} MOZC_CI_DELAY_FIRST_KEY_PUBLISH="
-          f"{os.environ.get('MOZC_CI_DELAY_FIRST_KEY_PUBLISH')}", flush=True)
+    print(f"probe: info tid={tid} hwnd={(hwnd or 0):#x}", flush=True)
     pump(3)  # the TIP loads and publishes its initial state
 
     s = read(tid)
@@ -205,9 +206,15 @@ def main():
     if not (s and s["eo"] == 1):
         sys.exit(1)
 
-    # ---- the delayed first key: send 'k' and confirm the shared memory stays frozen past the deadline,
-    # even though (per session.cc, read in the design review) the server should compose it within ~60ms.
+    # ---- the delayed key: arm the CI hook on the *next* key_seq value (the 'k' about to be sent,
+    # not the F2 just sent), then send 'k' and confirm the shared memory stays frozen past the
+    # deadline, even though (per session.cc, read in the design review) the server should compose
+    # it within ~60ms.
     baseline = read(tid)
+    target_key_seq = baseline["key_seq"] + 1
+    os.environ["MOZC_CI_DELAY_AT_KEY_SEQ"] = str(target_key_seq)
+    print(f"probe: info arming MOZC_CI_DELAY_AT_KEY_SEQ={target_key_seq} (baseline key_seq={baseline['key_seq']})",
+          flush=True)
     t0 = time.time()
     send_vk(0x4B)  # 'k'
     frozen = True
