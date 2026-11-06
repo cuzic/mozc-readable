@@ -44,13 +44,15 @@ k32.OpenEventW.argtypes = [wt.DWORD, wt.BOOL, wt.LPCWSTR]
 k32.WaitForSingleObject.argtypes = [wt.HANDLE, wt.DWORD]
 WNDPROC = ctypes.WINFUNCTYPE(ctypes.c_ssize_t, wt.HWND, wt.UINT, wt.WPARAM, wt.LPARAM)
 
-FMT = "<10IQ16I2I4Q2I"  # TipSharedState version 5, 160 bytes (offsets 0..79 version 3, 80..111 version 4; 112..159 version
-                        # 5, state-first: prefer_kana_input/toggle at 112..119, then diagnostics-only focus ticks and
-                        # key results -- see readable/docs/shared-memory.md 6-4)
+FMT = "<10IQ16I2I4Q2I2IQ"  # TipSharedState version 6 (EXPERIMENTAL, unreleased), 176 bytes (offsets 0..79 version 3,
+                        # 80..111 version 4; 112..159 version 5, state-first: prefer_kana_input/toggle at 112..119,
+                        # then diagnostics-only focus ticks and key results; 160..175 version 6, direct-actuation
+                        # nonce/result/cmd window -- see readable/docs/shared-memory.md 6-4/6-5)
 NAMES = ("magic version seq eo em to tm tid pid active tick phase cat plen pcur key_seq sfm srv cks "
          "csc sub_ee sub_term revert sub_other esf flags ctx prefer_kana toggle_enabled "
-         "ks_focus ks_blur thr_focus first_key eaten passed").split()
-assert struct.calcsize(FMT) == 160 and len(NAMES) == 35
+         "ks_focus ks_blur thr_focus first_key eaten passed "
+         "last_cmd_nonce last_cmd_result cmd_window_handle").split()
+assert struct.calcsize(FMT) == 176 and len(NAMES) == 38
 V4_COUNTERS = ("csc", "sub_ee", "sub_term", "revert", "sub_other", "esf")
 
 class GUID(ctypes.Structure):
@@ -149,7 +151,7 @@ def read(tid):
     if not _view:
         return None
     for _ in range(100):
-        a = struct.unpack(FMT, ctypes.string_at(_view, 160))
+        a = struct.unpack(FMT, ctypes.string_at(_view, 176))
         if a[2] % 2:
             continue
         if a[2] == struct.unpack("<I", ctypes.string_at(_view + 8, 4))[0]:
@@ -250,7 +252,7 @@ def main():
 
     s = p.st()
     print(f"probe: info initial {fmt(s)}", flush=True)
-    result("HARD", "block is version 5 (160 bytes) from this thread", s is not None and s["version"] == 5, fmt(s))
+    result("HARD", "block is version 6 (176 bytes) from this thread", s is not None and s["version"] == 6, fmt(s))
     if s is not None:
         print(f"probe: info version 5 input style: prefer_kana={s['prefer_kana']} toggle_enabled={s['toggle_enabled']}", flush=True)
         print(f"probe: info version 5 key results: eaten={s['eaten']} passed={s['passed']} key_seq={s['key_seq']}", flush=True)
