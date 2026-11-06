@@ -195,11 +195,13 @@ class AsyncSwitchInputModeEditSessionImpl final
  public:
   AsyncSwitchInputModeEditSessionImpl(
       wil::com_ptr_nothrow<TipTextService> text_service,
-      wil::com_ptr_nothrow<ITfContext> context, bool open, uint32_t native_mode)
+      wil::com_ptr_nothrow<ITfContext> context, bool open, uint32_t native_mode,
+      std::optional<uint32_t> direct_actuation_nonce = std::nullopt)
       : text_service_(std::move(text_service)),
         context_(std::move(context)),
         open_(open),
-        native_mode_(native_mode) {}
+        native_mode_(native_mode),
+        direct_actuation_nonce_(direct_actuation_nonce) {}
 
   // The ITfEditSession interface method.
   // This function is called back by the TSF thread manager when an edit
@@ -209,6 +211,10 @@ class AsyncSwitchInputModeEditSessionImpl final
         text_service_->GetPrivateContext(context_.get());
     if (!private_context) {
       // This is an unmanaged context. It's OK. Nothing to do.
+      // Version 6 (EXPERIMENTAL): the request reached an edit session but
+      // found no managed context by the time it actually ran (focus moved
+      // away between the request and this callback).
+      NoteDirectActuationResult(TipDirectActuationResult::kNoFocusedContext);
       return S_OK;
     }
 
@@ -217,6 +223,7 @@ class AsyncSwitchInputModeEditSessionImpl final
 
     CompositionMode mozc_mode = commands::HIRAGANA;
     if (!ConversionModeUtil::ToMozcMode(native_mode_, &mozc_mode)) {
+      NoteDirectActuationResult(TipDirectActuationResult::kSendCommandFailed);
       return E_FAIL;
     }
     Output output;
@@ -227,6 +234,7 @@ class AsyncSwitchInputModeEditSessionImpl final
       command.set_type(commands::SessionCommand::TURN_OFF_IME);
       command.set_composition_mode(mozc_mode);
       if (!private_context->GetClient()->SendCommand(command, &output)) {
+        NoteDirectActuationResult(TipDirectActuationResult::kSendCommandFailed);
         return E_FAIL;
       }
     } else if (!input_mode_manager->GetEffectiveOpenClose()) {
@@ -236,6 +244,7 @@ class AsyncSwitchInputModeEditSessionImpl final
       command.set_type(commands::SessionCommand::TURN_ON_IME);
       command.set_composition_mode(mozc_mode);
       if (!private_context->GetClient()->SendCommand(command, &output)) {
+        NoteDirectActuationResult(TipDirectActuationResult::kSendCommandFailed);
         return E_FAIL;
       }
     } else {
@@ -245,30 +254,55 @@ class AsyncSwitchInputModeEditSessionImpl final
       command.set_type(SessionCommand::SWITCH_COMPOSITION_MODE);
       command.set_composition_mode(mozc_mode);
       if (!private_context->GetClient()->SendCommand(command, &output)) {
+        NoteDirectActuationResult(TipDirectActuationResult::kSendCommandFailed);
         return E_FAIL;
       }
     }
-    return TipEditSessionImpl::UpdateContext(
+    const HRESULT result = TipEditSessionImpl::UpdateContext(
         text_service_.get(), context_.get(), write_cookie, output);
+    // Version 6 (EXPERIMENTAL): report the outcome only after UpdateContext
+    // (which Publish()es effective_open/tsf_open on the key-output path) has
+    // run, so a reader waiting on `last_cmd_nonce` sees both in the same wake.
+    NoteDirectActuationResult(SUCCEEDED(result)
+                                  ? TipDirectActuationResult::kApplied
+                                  : TipDirectActuationResult::kSendCommandFailed);
+    return result;
   }
 
  private:
+  void NoteDirectActuationResult(TipDirectActuationResult result) {
+    if (direct_actuation_nonce_.has_value()) {
+      TipStatePublisher::SetLastCommandResult(*direct_actuation_nonce_, result);
+    }
+  }
+
   wil::com_ptr_nothrow<TipTextService> text_service_;
   wil::com_ptr_nothrow<ITfContext> context_;
   bool open_;
   uint32_t native_mode_;
+  std::optional<uint32_t> direct_actuation_nonce_;
 };
 
 bool OnSwitchInputModeAsync(TipTextService* text_service, ITfContext* context,
-                            bool open, uint32_t native_mode) {
+                            bool open, uint32_t native_mode,
+                            std::optional<uint32_t> direct_actuation_nonce =
+                                std::nullopt) {
   auto edit_session = MakeComPtr<AsyncSwitchInputModeEditSessionImpl>(
-      text_service, context, open, native_mode);
+      text_service, context, open, native_mode, direct_actuation_nonce);
 
   HRESULT edit_session_result = S_OK;
   const HRESULT hr = context->RequestEditSession(
       text_service->GetClientID(), edit_session.get(),
       TF_ES_ASYNCDONTCARE | TF_ES_READWRITE, &edit_session_result);
-  return RequestSucceeded(hr, edit_session_result);
+  const bool ok = RequestSucceeded(hr, edit_session_result);
+  if (!ok && direct_actuation_nonce.has_value()) {
+    // The edit session itself was never granted/queued, so
+    // AsyncSwitchInputModeEditSessionImpl::DoEditSession will not run to
+    // report its own outcome.
+    TipStatePublisher::SetLastCommandResult(
+        *direct_actuation_nonce, TipDirectActuationResult::kSendCommandFailed);
+  }
+  return ok;
 }
 
 // This class is an implementation class for the ITfEditSession classes, which
@@ -865,48 +899,64 @@ bool TipEditSession::ReconvertFromApplicationSync(TipTextService* text_service,
   return OnOutputReceivedSync(text_service, context.get(), std::move(output));
 }
 
-bool TipEditSession::SwitchInputModeAsync(TipTextService* text_service,
-                                          uint32_t mozc_mode) {
+bool TipEditSession::SwitchInputModeAsync(
+    TipTextService* text_service, uint32_t mozc_mode,
+    std::optional<uint32_t> direct_actuation_nonce) {
   commands::CompositionMode mode =
       static_cast<commands::CompositionMode>(mozc_mode);
+  // Version 6 (EXPERIMENTAL): report a result directly for every early return
+  // below that happens before OnSwitchInputModeAsync (which reports its own
+  // outcome, including from AsyncSwitchInputModeEditSessionImpl::DoEditSession
+  // once that edit session actually runs).
+  const auto note_early = [&](TipDirectActuationResult result) {
+    if (direct_actuation_nonce.has_value()) {
+      TipStatePublisher::SetLastCommandResult(*direct_actuation_nonce, result);
+    }
+  };
 
   if (text_service == nullptr) {
+    note_early(TipDirectActuationResult::kNoFocusedContext);
     return false;
   }
   ITfThreadMgr* thread_mgr = text_service->GetThreadManager();
   if (thread_mgr == nullptr) {
+    note_early(TipDirectActuationResult::kNoFocusedContext);
     return false;
   }
 
   wil::com_ptr_nothrow<ITfDocumentMgr> document;
   if (FAILED(thread_mgr->GetFocus(&document))) {
+    note_early(TipDirectActuationResult::kNoFocusedContext);
     return false;
   }
   if (document == nullptr) {
     // This is an unmanaged context. It's OK. Nothing to do.
+    note_early(TipDirectActuationResult::kNoFocusedContext);
     return true;
   }
 
   wil::com_ptr_nothrow<ITfContext> context;
   if (FAILED(document->GetBase(&context))) {
+    note_early(TipDirectActuationResult::kNoFocusedContext);
     return false;
   }
 
-  Output output;
   if (mode == commands::DIRECT) {
     DWORD native_mode = 0;
     if (!TipStatus::GetInputModeConversion(text_service->GetThreadManager(),
                                            text_service->GetClientID(),
                                            &native_mode)) {
+      note_early(TipDirectActuationResult::kSendCommandFailed);
       return false;
     }
     return OnSwitchInputModeAsync(text_service, context.get(), false,
-                                  native_mode);
+                                  native_mode, direct_actuation_nonce);
   }
   TipPrivateContext* private_context =
       text_service->GetPrivateContext(context.get());
   if (!private_context) {
     // This is an unmanaged context.
+    note_early(TipDirectActuationResult::kNoFocusedContext);
     return false;
   }
 
@@ -914,10 +964,12 @@ bool TipEditSession::SwitchInputModeAsync(TipTextService* text_service,
   if (!ConversionModeUtil::ToNativeMode(
           mode, private_context->input_behavior().prefer_kana_input,
           &native_mode)) {
+    note_early(TipDirectActuationResult::kSendCommandFailed);
     return false;
   }
 
-  return OnSwitchInputModeAsync(text_service, context.get(), true, native_mode);
+  return OnSwitchInputModeAsync(text_service, context.get(), true, native_mode,
+                                direct_actuation_nonce);
 }
 
 bool TipEditSession::GetTextSync(TipTextService* text_service, ITfRange* range,

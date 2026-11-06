@@ -72,6 +72,14 @@ inline constexpr wchar_t kMessageReceiverMessageName[] =
     L"googlejapaneseinput.renderer.message";
 inline constexpr wchar_t kMessageReceiverClassName[] =
     L"googlejapaneseinput.renderer.window";
+// EXPERIMENTAL (awase exp/direct-actuation-channel, unreleased): a direct
+// actuation request channel, separate from the renderer callback above so
+// this new, auditable entry point does not share wparam/lparam semantics
+// with the pre-existing renderer channel.
+inline constexpr wchar_t kDirectActuationMessageName[] =
+    L"googlejapaneseinput.direct_actuation.message";
+inline constexpr wchar_t kDirectActuationWindowClassName[] =
+    L"googlejapaneseinput.direct_actuation.window";
 inline constexpr wchar_t kCandidateWindowClassName[] =
     L"GoogleJapaneseInputCandidateWindow";
 inline constexpr wchar_t kCompositionWindowClassName[] =
@@ -115,6 +123,14 @@ inline constexpr wchar_t kMozcCacheServiceName[] = L"MozcReadableCacheService";
 inline constexpr wchar_t kMessageReceiverMessageName[] =
     L"mozcreadable.renderer.message";
 inline constexpr wchar_t kMessageReceiverClassName[] = L"mozcreadable.renderer.window";
+// EXPERIMENTAL (awase exp/direct-actuation-channel, unreleased): a direct
+// actuation request channel, separate from the renderer callback above so
+// this new, auditable entry point does not share wparam/lparam semantics
+// with the pre-existing renderer channel.
+inline constexpr wchar_t kDirectActuationMessageName[] =
+    L"mozcreadable.direct_actuation.message";
+inline constexpr wchar_t kDirectActuationWindowClassName[] =
+    L"mozcreadable.direct_actuation.window";
 inline constexpr wchar_t kCandidateWindowClassName[] = L"MozcCandidateWindow";
 inline constexpr wchar_t kCompositionWindowClassName[] =
     L"MozcCompositionWindow";

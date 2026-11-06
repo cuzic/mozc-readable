@@ -420,7 +420,8 @@ class TipTextServiceImpl
         converted_attribute_(TF_INVALID_GUIDATOM),
         thread_context_(nullptr),
         task_window_handle_(nullptr),
-        renderer_callback_window_handle_(nullptr) {}
+        renderer_callback_window_handle_(nullptr),
+        direct_actuation_window_handle_(nullptr) {}
 
   static bool OnDllProcessAttach(HMODULE module_handle) {
     if (!RegisterWindowClass(module_handle, kTaskWindowClassName,
@@ -432,12 +433,21 @@ class TipTextServiceImpl
                              RendererCallbackWidnowProc)) {
       return false;
     }
+
+    // EXPERIMENTAL (awase exp/direct-actuation-channel, unreleased): a
+    // separate window/message from the renderer callback above, see
+    // tip_state_publisher.h version 6.
+    if (!RegisterWindowClass(module_handle, mozc::kDirectActuationWindowClassName,
+                             DirectActuationWindowProc)) {
+      return false;
+    }
     return true;
   }
 
   static void OnDllProcessDetach(HMODULE module_handle) {
     ::UnregisterClass(kTaskWindowClassName, module_handle);
     ::UnregisterClass(kMessageReceiverClassName, module_handle);
+    ::UnregisterClass(mozc::kDirectActuationWindowClassName, module_handle);
   }
 
   // ITfTextInputProcessorEx
@@ -479,6 +489,8 @@ class TipTextServiceImpl
     UninitPrivateContexts();
 
     UninitRendererCallbackWindow();
+
+    UninitDirectActuationWindow();
 
     UninitTaskWindow();
 
@@ -552,6 +564,12 @@ class TipTextServiceImpl
     // because 1), it is not so critical, and 2) it actually fails in
     // Internet Explorer 10 on Windows 8.
     InitRendererCallbackWindow();
+
+    // EXPERIMENTAL (awase exp/direct-actuation-channel, unreleased): same
+    // best-effort treatment as the renderer callback above. A failure just
+    // means `cmd_window_handle` stays 0 and callers fall back to whatever
+    // they do today.
+    InitDirectActuationWindow();
 
     // Start advising thread events to this object.
     result = InitThreadManagerEventSink();
@@ -1471,6 +1489,122 @@ class TipTextServiceImpl
                                             lparam);
   }
 
+  // ---- EXPERIMENTAL (awase exp/direct-actuation-channel, unreleased) ----
+  // A direct-actuation request/ack channel: lets a caller (awase) ask this
+  // TIP to turn the IME on/off without synthesizing a keystroke, going
+  // through the exact same TURN_ON_IME/TURN_OFF_IME/SWITCH_COMPOSITION_MODE
+  // server round trip a real key event would (TipEditSession::
+  // SwitchInputModeAsync), not a bespoke code path. The result is reported
+  // via TipSharedState::last_cmd_nonce/last_cmd_result (tip_state_publisher.h
+  // version 6), not over this window.
+  //
+  // Wire format of the registered message (mozc::kDirectActuationMessageName):
+  //   wparam: nonce, the low 32 bits of the WPARAM. Must be nonzero (0 means
+  //           "no request yet" in last_cmd_nonce and cannot be distinguished
+  //           from "unset").
+  //   lparam: bit 0 = desired_open (0 = turn off, 1 = turn on, preserving the
+  //           thread's current composition mode). Bits 1..31 must be 0
+  //           (reserved for a future mode field); a caller setting them gets
+  //           TipDirectActuationResult::kReservedBitsSet and no action is
+  //           taken, so an older receiver never silently misreads a newer
+  //           caller's bits as something else.
+  HRESULT InitDirectActuationWindow() {
+    if (::IsWindow(direct_actuation_window_handle_)) {
+      return S_FALSE;
+    }
+    direct_actuation_window_handle_ = ::CreateWindowExW(
+        0, mozc::kDirectActuationWindowClassName, L"", 0, 0, 0, 0, 0,
+        HWND_MESSAGE, nullptr, g_module, nullptr);
+    if (!::IsWindow(direct_actuation_window_handle_)) {
+      direct_actuation_window_handle_ = nullptr;
+      TipStatePublisher::PublishCommandWindow(0);
+      return E_FAIL;
+    }
+    static UINT direct_actuation_message =
+        ::RegisterWindowMessage(mozc::kDirectActuationMessageName);
+    if (!WindowUtil::ChangeMessageFilter(direct_actuation_window_handle_,
+                                         direct_actuation_message)) {
+      ::DestroyWindow(direct_actuation_window_handle_);
+      direct_actuation_window_handle_ = nullptr;
+      TipStatePublisher::PublishCommandWindow(0);
+      return E_FAIL;
+    }
+    TipStatePublisher::PublishCommandWindow(
+        reinterpret_cast<uint64_t>(direct_actuation_window_handle_));
+    return S_OK;
+  }
+
+  HRESULT UninitDirectActuationWindow() {
+    if (!::IsWindow(direct_actuation_window_handle_)) {
+      return S_FALSE;
+    }
+    ::DestroyWindow(direct_actuation_window_handle_);
+    direct_actuation_window_handle_ = nullptr;
+    TipStatePublisher::PublishCommandWindow(0);
+    return S_OK;
+  }
+
+  static LRESULT WINAPI DirectActuationWindowProc(HWND window_handle,
+                                                   UINT message, WPARAM wparam,
+                                                   LPARAM lparam) {
+    TipTextServiceImpl* self = Self();
+    if (self == nullptr) {
+      return ::DefWindowProcW(window_handle, message, wparam, lparam);
+    }
+
+    // Do not care about thread safety (same reasoning as RendererCallbackWidnowProc).
+    static UINT direct_actuation_message =
+        ::RegisterWindowMessage(mozc::kDirectActuationMessageName);
+    if (window_handle == self->direct_actuation_window_handle_) {
+      if (message == direct_actuation_message) {
+        self->OnDirectActuationCommand(wparam, lparam);
+        return 0;
+      }
+    }
+    return ::DefWindowProcW(window_handle, message, wparam, lparam);
+  }
+
+  void OnDirectActuationCommand(WPARAM wparam, LPARAM lparam) {
+    // Only the low 32 bits of either parameter are meaningful (see the wire
+    // format comment above); a narrowing cast truncates modulo 2^32, which is
+    // well-defined and correct on both 32- and 64-bit builds regardless of
+    // how a 32-bit LPARAM happened to be sign-extended into the wider
+    // WPARAM/LPARAM type on this build (WOW64 thunking already truncates
+    // cross-process values to 32 bits for a 32-bit receiver).
+    const uint32_t nonce = static_cast<uint32_t>(wparam);
+    const uint32_t command = static_cast<uint32_t>(lparam);
+    if (nonce == 0) {
+      // Not a valid request (see the wire format comment above); nothing to
+      // report back either, since there is no nonce to key it by.
+      return;
+    }
+    if ((command & ~uint32_t{1}) != 0) {
+      TipStatePublisher::SetLastCommandResult(
+          nonce, TipDirectActuationResult::kReservedBitsSet);
+      return;
+    }
+    const bool desired_open = (command & 1) != 0;
+    uint32_t mozc_mode = commands::HIRAGANA;
+    if (desired_open) {
+      // Preserve the thread's current composition mode; only open/close.
+      const TipInputModeManager* input_mode_manager =
+          GetThreadContext() != nullptr
+              ? GetThreadContext()->GetInputModeManager()
+              : nullptr;
+      if (input_mode_manager != nullptr) {
+        mozc_mode =
+            static_cast<uint32_t>(input_mode_manager->GetEffectiveConversionMode());
+      }
+    } else {
+      mozc_mode = static_cast<uint32_t>(commands::DIRECT);
+    }
+    // The result (including TipDirectActuationResult::kApplied /
+    // kNoFocusedContext / kSendCommandFailed) is reported from inside this
+    // call via TipStatePublisher::SetLastCommandResult(nonce, ...), once
+    // (not before) any state change it causes has been published.
+    TipEditSession::SwitchInputModeAsync(this, mozc_mode, nonce);
+  }
+
   // Represents the status of the thread manager which owns this IME object.
   wil::com_ptr_nothrow<ITfThreadMgr> thread_mgr_;
 
@@ -1510,6 +1644,8 @@ class TipTextServiceImpl
   std::unique_ptr<TipThreadContext> thread_context_;
   HWND task_window_handle_;
   HWND renderer_callback_window_handle_;
+  // EXPERIMENTAL (awase exp/direct-actuation-channel, unreleased).
+  HWND direct_actuation_window_handle_;
 };
 
 }  // namespace

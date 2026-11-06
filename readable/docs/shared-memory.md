@@ -3,7 +3,7 @@
 [mozc-readable](https://github.com/cuzic/mozc-readable) の TIP(Mozc の TSF 入力方式)が書き出す、IME の開閉・入力モードの共有メモリの仕様です。awase を含め、外部のプロセスが「いまの IME の状態」を読むための取り決めです。方針と経緯は [ADR-265](https://github.com/cuzic/awase/blob/develop/docs/adr/265-mozc-readable-integration.md)(awase リポジトリ) を参照してください。
 
 - 本書の「ADR-nnn」は、awase リポジトリの `docs/adr/` の文書を指します。
-- **版**: **version 5**(160 バイト。フォーカス時刻・キーの食べた/素通り数・入力方式の3グループを、状態を先・診断専用を後にまとめて追加。6-4)。version 4(112 バイト。診断用のカウンタなどを追加。6-3)は実際にリリースされた最後の版です(GitHub Release `v3.35.6354-readable.1`)。version 3(80 バイト。組成の状態。ADR-267)は `readable` に入っています(a0c5074c、PR #4)。version 2 は `aa228f6`。version 2 の動作は CI で確認済みです(通常の窓・Chrome・Notepad・AppContainer の窓から別プロセスが読めること。IME を切り替えたあとの `active=0` も実測済み。5-1)。version 4・version 5 の項目は**実機での実測がまだありません**。version 1(`reserved` のまま、`magic` が先に書かれる)の読み方は、古いビルド向けに 6 章に残します。**注記(2026-11-04)**: version 5 は、同日まで短期間だけ別々の未リリース版(5/6/7)として `readable` に存在した内容を、最初のリリース前に1つへ統合したものです。どのリリースにも version 5/6/7 が単独で出たことは無いため、旧3版の並びを保存する義務はなく、7章の変更履歴も統合後の形にまとめ直してあります。
+- **版**: **version 6**(176 バイト。直接actuationコマンドのnonce/結果を追加。6-5。**EXPERIMENTAL、未リリース** — awase `exp/direct-actuation-channel` ブランチでの実験実装。読み書きの対象は、いまのところ awase 自身のこの実験ブランチだけ)。version 5(160 バイト。フォーカス時刻・キーの食べた/素通り数・入力方式の3グループを、状態を先・診断専用を後にまとめて追加。6-4)は version 6 の前身で、まだリリースされていません。version 4(112 バイト。診断用のカウンタなどを追加。6-3)は実際にリリースされた最後の版です(GitHub Release `v3.35.6354-readable.1`)。version 3(80 バイト。組成の状態。ADR-267)は `readable` に入っています(a0c5074c、PR #4)。version 2 は `aa228f6`。version 2 の動作は CI で確認済みです(通常の窓・Chrome・Notepad・AppContainer の窓から別プロセスが読めること。IME を切り替えたあとの `active=0` も実測済み。5-1)。version 4・version 5・version 6 の項目は**実機での実測がまだありません**。version 1(`reserved` のまま、`magic` が先に書かれる)の読み方は、古いビルド向けに 6 章に残します。**注記(2026-11-04)**: version 5 は、同日まで短期間だけ別々の未リリース版(5/6/7)として `readable` に存在した内容を、最初のリリース前に1つへ統合したものです。どのリリースにも version 5/6/7 が単独で出たことは無いため、旧3版の並びを保存する義務はなく、7章の変更履歴も統合後の形にまとめ直してあります。
 - 出典: mozc-readable の `src/win32/tip/tip_state_publisher.{h,cc}`(`readable` ブランチ)。食い違いがあれば実装が正です。
 - 効く IME は mozc-readable だけです(公式の Mozc・Google 日本語入力・Microsoft IME には書き出し側が無い)。
 
@@ -71,14 +71,14 @@ ZMK など Raw HID の仕組みが標準で無いファームについては、�
 - マッピングの DACL は、LocalSystem・Administrators・現在のユーザーに全権、`ALL APPLICATION PACKAGES` に読み取りです(`WinSandbox::kSharableFileForRead`)。
 - **AppContainer 内のプロセス(UWP など)が作る `Local\` は、`\Sessions\<n>\AppContainerNamedObjects\<AppContainer SID>\` に振り分けられます**。そのため、`OpenFileMappingW("Local\\mozc-readable-ime-<TID>")` では届きません。**`NtOpenSection` で、その名前空間の完全なパスを指定すれば外から読めます**(CI で実測済み。4-4 章)。通知イベント(`...-changed`)も同じ名前空間に振り分けられる見込みですが、未確認です。
 
-## 2. `TipSharedState`(version 5、160 バイト)
+## 2. `TipSharedState`(version 6、176 バイト、**EXPERIMENTAL・未リリース**)
 
 リトルエンディアン。構造体の配置は外部インターフェースの一部で、**追記のみ・互換を壊すときは `version` を上げる**取り決めです。
 
 | オフセット | 型 | 名前 | 意味 |
 | --- | --- | --- | --- |
 | 0 | u32 | `magic` | `0x5A52444D`(メモリ上のバイト列は `4D 44 52 5A`、ASCII の `MDRZ`) |
-| 4 | u32 | `version` | 現行は `5`。旧サイズの共有メモリが残っているときの書き出し側は `4`(112 バイト)・`3`(80 バイト)または `2`(48 バイト)(3-2)。version 1 は古いビルド(6 章) |
+| 4 | u32 | `version` | 現行は `6`。旧サイズの共有メモリが残っているときの書き出し側は `5`(160 バイト)・`4`(112 バイト)・`3`(80 バイト)または `2`(48 バイト)(3-2)。version 1 は古いビルド(6 章) |
 | 8 | u32 | `seq` | seqlock の番号。**書き込み中は奇数** |
 | 12 | u32 | `effective_open` | 0/1。Mozc のセッションから見た IME の開閉(入力スコープによる上書き後) |
 | 16 | u32 | `effective_mode` | `commands::CompositionMode`(Mozc のセッション) |
@@ -112,11 +112,15 @@ ZMK など Raw HID の仕組みが標準で無いファームについては、�
 | 144 | u64 | `first_key_tick_ms` | `key_sink_focus_tick_ms` を更新したあと、TIP が**最初に数えたキーダウン**(`key_seq` が増えた)の時刻。0=フォーカスの後まだキーが来ていない。キーシンクが前景になるたびに 0 へ戻る |
 | 152 | u32 | `key_eaten_count` | `key_seq` が増えたキーダウンのうち、キーシンクが**食べた**(`eaten = TRUE`)数。単調増加でラップ。結果は `OnTestKeyDown` が返したもの(`OnTestKeyDown` を飛ばすホストは `OnKeyDown` のもの)。Windows Terminal 等の「先頭だけ素通り」を、素通りした数で調べるための診断用 |
 | 156 | u32 | `key_passed_count` | `key_seq` が増えたキーダウンのうち、キーシンクが**食べなかった**(アプリへ素通りさせた)数。`key_eaten_count + key_passed_count` は、TIP が読み込まれてからの `key_seq` の増分に等しい(`OnTestKeyDown` の食べた結果と `OnKeyDown` の最終結果が食い違う稀な場合を除く) |
+| 160 | u32 | `last_cmd_nonce` | **EXPERIMENTAL(version 6、未リリース)**。6-5 の直接actuationコマンドで、この TIP が最後に処理した要求の nonce(要求側がメッセージの wparam に乗せた値)。0=まだ1件も処理していない |
+| 164 | u32 | `last_cmd_result` | **EXPERIMENTAL(version 6、未リリース)**。`last_cmd_nonce` の要求の結果。0=`kNone`(未処理)、1=`kApplied`(適用済み。実キーと同じ `TURN_ON_IME`/`TURN_OFF_IME`/`SWITCH_COMPOSITION_MODE` の server round trip が完了し、`effective_open`/`tsf_open` 等はこの書き込みより前に反映済み)、2=`kNoFocusedContext`(このスレッドにフォーカス中の `ITfContext` が無い)、3=`kSendCommandFailed`(server round trip 自体が失敗、または edit session が得られなかった)、4=`kReservedBitsSet`(要求の予約ビットが 0 でなかったため何もしていない) |
+| 168 | u64 | `cmd_window_handle` | **EXPERIMENTAL(version 6、未リリース)**。6-5 の直接actuationコマンドを送る宛先の `HWND`(値をそのまま u64 にしたもの)。0=まだ窓が無い(未アクティベート、または作成失敗) |
 
-- 全体は 160 バイト(`update_tick_ms`〈u64〉がオフセット 40 で 8 の倍数、version 3 の追記の u32×8 が 48〜79、version 4 の追記の u32×8 が 80〜111、version 5 の追記が 112〜159。暗黙の詰め物なし——version 5 内は u32×2(112〜119)→u64×4(120〜151)→u32×2(152〜159)の順で、どのブロックもそのまま 8 の倍数のオフセットに揃う)。今後の追記は 160 から始め、u64 は 8 の倍数のオフセットに置く。参考: Python は `struct.Struct("<10IQ16I2I4Q2I")`(= 160、version 4 だけなら `<10IQ16I` = 112、version 3 だけなら `<10IQ8I` = 80)。
+- 全体は 176 バイト(`update_tick_ms`〈u64〉がオフセット 40 で 8 の倍数、version 3 の追記の u32×8 が 48〜79、version 4 の追記の u32×8 が 80〜111、version 5 の追記が 112〜159、version 6 の追記が 160〜175。暗黙の詰め物なし——version 5 内は u32×2(112〜119)→u64×4(120〜151)→u32×2(152〜159)の順、version 6 内は u32×2(160〜167)→u64×1(168〜175)の順で、どのブロックもそのまま 8 の倍数のオフセットに揃う)。今後の追記は 176 から始め、u64 は 8 の倍数のオフセットに置く。参考: Python は `struct.Struct("<10IQ16I2I4Q2I2IQ")`(= 176、version 5 だけなら `<10IQ16I2I4Q2I` = 160、version 4 だけなら `<10IQ16I` = 112、version 3 だけなら `<10IQ8I` = 80)。
 - **version 5 のうち `prefer_kana_input`・`use_romaji_key_to_toggle_input_style`(オフセット 112〜119)は状態です**(診断用カウンタではない)。`effective_mode` などと同様に、**変化したら通知イベントを pulse します**(同じ version 5 の他の項目や version 4 の項目と違い、打鍵のたびには書かれない——`prefer_kana_input` が実際に反転したときだけ書く)。`active == 0` のときは無視してください。**段階1(ADR-287, awase)はこの項目を観測専用として使い、belief/actuation の判断には混ぜません**——OSのロックビット(`GetKeyState(VK_KANA)`)との食い違い・遅延を実機で集めるためです。
 - **version 5 のうちフォーカス時刻(オフセット 120〜151)とキーの食べた/素通り数(オフセット 152〜159)は診断用**です。時刻はすべて `GetTickCount64()`、カウンタは単調増加でラップし、**変化したときだけ書き、通知イベントは pulse しません**。`active == 0` のときは無視し、`Deactivate` でもカウンタは 0 に戻しません。読み手は、自分が打鍵を送った時刻と並べて「その打鍵が、TIP がキーを受け取る側になる前だったか」(フォーカス時刻)、自分の打鍵の前後で差を取り `Δkey_seq == Δeaten + Δpassed` のうち何打鍵が食べられ何打鍵が素通りしたか(キー数)を調べます。
 - **version 4 の項目(オフセット 80〜111)は診断用**です(「ひらがなにはなるが変換候補にならない」型の症状を調べるため。Windows Terminal で観測)。カウンタはすべて単調増加でラップし、**変化したときだけ書き、通知イベントは pulse しません**。`active == 0` のときは他の項目と同じく無視し、`Deactivate` でもカウンタは 0 に戻しません(スレッドの通算)。読み手は差を取って使います。
+- **version 6 のうち `last_cmd_nonce`・`last_cmd_result`(オフセット 160〜167)は状態です**(診断用カウンタではない)。6-5 の直接actuationコマンドの完了を表すので、**変化したら通知イベントを pulse します**。`cmd_window_handle`(オフセット 168〜175)は診断用で、作成・破棄のたびに書きますが pulse しません(読み手は宛先を知るためにどうせブロックを読む必要があるため)。詳細は 6-5。
 - 48 バイトまでの意味は version 2 と同じです。
 
 ### 入力モードの値(`CompositionMode`、Mozc の `protocol/commands.proto`)
@@ -270,6 +274,25 @@ version 1 のブロックを読む場合は、`active` が無いので「いま�
 - 中身は3グループ、**状態を先、診断専用を後**に並ぶ: `prefer_kana_input`・`use_romaji_key_to_toggle_input_style`(オフセット112〜119、状態として扱い変化したら pulse します、2章参照)→ キーボードフォーカスの時刻4つ(120〜151、診断専用)→ `key_eaten_count`・`key_passed_count`(152〜159、診断専用)。
 - **経緯(2026-11-04 の統合)**: version 5 は一度もリリースされていません。この版の内容は、同日まで `readable` ブランチ上で短期間だけ別々の未リリース版として存在していました——(旧)version 5(144バイト、キーボードフォーカスの時刻のみ、2026-10-21 起案)・(旧)version 6(152バイト、キー数のみ、2026-11-01 起案)・(旧)version 7(160バイト、入力方式のみ、2026-11-04 起案、awase の BUG-106/ADR-287 由来)。どの版も GitHub Release には出ておらず(実際にリリースされた最後の版は version 4、`v3.35.6354-readable.1`)、保存すべき互換性が無かったため、最初のリリース前に1つの version 5 へ統合し、ついでに「状態(pulseする)を先、診断専用(pulseしない)を後」という読みやすい順に組み直しました(旧版では歴史的な追記順のまま、状態の `prefer_kana_input` 等が末尾に来ていた)。7章の変更履歴も、旧3版のエントリをこの1件にまとめています。
 
+## 6-5. version 5 から version 6 へ(**EXPERIMENTAL・未リリース**、直接actuationコマンド)
+
+- 追記のみです(オフセット 160〜175、16 バイト)。0〜159 の意味は変わりません。`version` は 6、サイズは 176 です。
+- version 5 の読み手は、160 バイトで map して読み続ければ動きます(`version >= 5` で判定している場合)。version 4 以前の読み手も同様に、自分の版のサイズで読み続けられます。
+- **この版は共有メモリ自体を actuation の入口にはしません**。要求(awase → TIP)は、別の経路(登録ウィンドウメッセージ、下記)で送ります。共有メモリに追記したのは、その要求の**結果**(`last_cmd_nonce`/`last_cmd_result`)と、要求を送る**宛先**(`cmd_window_handle`)だけです。読み手(=この窓口を使う awase 自身)が自分の `thread_id`/`process_id` の正しいブロックから `cmd_window_handle` を読めば、`FindWindow` 等の列挙なしに宛先が分かります。
+- **要求の送り方(ウィンドウメッセージ、`mozc::kDirectActuationMessageName` を `RegisterWindowMessage` した値)**:
+  - 送り先: そのスレッドの `cmd_window_handle`。`PostMessage`(`SendMessage` ではない。TIP 側のメッセージループが同じスレッドで動くため、別プロセスから `SendMessage` すると実質ブロックする恐れがあるのを避ける)。
+  - `wparam`: nonce(0 以外の u32。下位 32 ビットだけを見る)。読み手(awase)は、送るたびに違う値を使い、`last_cmd_nonce` がその値になるまで待つ。
+  - `lparam`: bit0 = `desired_open`(0=IME を閉じる、1=IME を開く。開くときは、そのスレッドの**いまの変換モードを保ったまま**開く)。bit1〜31 は予約(0 でなければ `kReservedBitsSet` になり、何もしない)。下位 32 ビットだけを見る(WOW64 越しに 32bit の受け手へ届くときに上位ビットが保証されないため)。
+  - 受け手(TIP)は、実キーが `VK_DBE_*` などを処理するときと**同じ** `TURN_ON_IME`/`TURN_OFF_IME`/`SWITCH_COMPOSITION_MODE` の server round trip(`TipEditSession::SwitchInputModeAsync`)を使います。別の簡略ルートは用意しません(実キーとの振る舞いの食い違いを避けるため)。
+  - 結果は `last_cmd_result`(`kApplied`/`kNoFocusedContext`/`kSendCommandFailed`/`kReservedBitsSet`)に、**要求が起こした `effective_open`/`tsf_open` 等の変化がすべて書き込まれたあと**に書かれ、変化を pulse します(2章参照)。読み手は、通知イベントで起きるか `last_cmd_nonce` をポーリングし、自分の nonce になった時点で `effective_open`/`tsf_open` も最新だと見なせます。
+  - **投げっぱなしで確認しない開ループとの違い**: 実キーを模した `SendInput` 等では「送った」ことしか分からず、TIP が実際に受け取り処理したかは別途ポーリングで推測するしかありません。この経路は、TIP 自身が「この nonce の要求をどう処理したか」を書き戻すので、**要求ごとに成否が確定します**(閉ループ)。ただし `TF_ES_ASYNCDONTCARE` の edit session は本当に非同期になる場合があり、`last_cmd_result` が付くまでの遅延は未実測です。
+- **未実測・未検証(実機での動作確認はまだ無い)**:
+  - cmd_window_handle 経由の `PostMessage` が実際に届くまでの遅延。
+  - `TF_ES_ASYNCDONTCARE` が実際に非同期側へ回る頻度と、そのときの `last_cmd_result` までの遅延分布。
+  - 複数の要求を連続で投げたときの順序保証(TSF の edit session のキューイングに依存、未調査)。
+  - AppContainer の窓(4-4)への `PostMessage` が UIPI を越えて届くか(`ChangeMessageFilter` は要求元が同一セッションの通常ユーザーであることまでしか保証しない)。
+- **実装**: mozc-readable `exp/direct-actuation-channel` ブランチ(`src/win32/tip/tip_state_publisher.{h,cc}`・`tip_edit_session.{h,cc}`・`tip_text_service.cc`・`src/base/const.h`)。対応する awase 側のクライアントは awase `exp/mozc-direct-actuation` ブランチ。どちらも **develop/readable へはまだマージしていません**(実験運用で様子を見てから判断)。
+
 ## 7. 変更履歴
 
 | 日付 | 内容 |
@@ -281,3 +304,4 @@ version 1 のブロックを読む場合は、`active` が無いので「いま�
 | 2026-10-19 | version 4(112 バイト)を追加: 診断用のカウンタ(`composition_start_count`・SUBMIT/REVERT の入口別・`edit_session_fail_count`)・`diag_flags`・`update_context_id`。実機の Windows Terminal で `phase=0` が数秒続く症状(1 打鍵ごとに確定される疑い)を調べるため。CI 確認前 |
 | 2026-10-21〜2026-11-04 | (統合により以下の 2026-11-04 の1件に置き換え)version 5(144バイト、フォーカス時刻)→ version 6(152バイト、キー数)→ version 7(160バイト、入力方式)の順に起案したが、いずれも未リリースのまま次の版に追い越された |
 | 2026-11-04 | **version 5(160 バイト)を追加・統合**: キーボードフォーカスの時刻(`key_sink_focus_tick_ms`・`key_sink_blur_tick_ms`・`thread_focus_tick_ms`・`first_key_tick_ms`、実機の Windows Terminal で「フォーカス変更直後の最初の打鍵が TIP に届かず素通りする」症状を調べるため)・`key_eaten_count`・`key_passed_count`(実機で、IME ON から 137ms 後の `da`〈Chrome〉の `d`/`a` のどちらが素通りしたかを `key_seq` では区別できなかったため)・`prefer_kana_input`・`use_romaji_key_to_toggle_input_style`(dragonflyg4 の実機〈Windows Terminal、Mozc Readable運用中〉で、awase が送った romaji "to" の瞬間だけ JIS かな配列として解釈され「ｶﾗ」に化る事例を確認——awase の BUG-106 追補7。従来の検知〈OS の `GetKeyState(VK_KANA)` ロックビット、ADR-118〉は Mozc 自身の入力方式そのものとは別軸だったため、`InputBehavior::prefer_kana_input`〈`VK_DBE_ROMAN`/`VK_DBE_NOROMAN` で反転しうる、システム/セッション全体のトグル〉を直接出す。詳細は awase の [ADR-287](https://github.com/cuzic/awase/blob/develop/docs/adr/287-mozc-input-style-signal.md))。この3グループは2026-10-21〜11-04の間、別々の未リリース版(旧5/6/7)として `readable` に短期間存在したが、どのGitHub Releaseにも出ていなかったため(実際にリリースされた最後の版は version 4、`v3.35.6354-readable.1`)、最初のリリース前に1つの version 5へ統合し、オフセット順を「状態(pulseする`prefer_kana_input`等)を先、診断専用(pulseしない時刻・カウンタ)を後」に組み直した(旧版は追記順のまま、状態項目が末尾に来ていた)。挙動は変えない(Publish する値を読むだけ、計算ロジックには触れていない)。Windows 向けのビルドと CI は実行中・結果はこの文書にまだ反映していない |
+| 2026-11-05 | **version 6(176 バイト)を追加: 直接actuationコマンド(`last_cmd_nonce`・`last_cmd_result`・`cmd_window_handle`)。EXPERIMENTAL、未リリース**。awase の「開ループ(キーを送って成功を推測する)ではなく閉ループ(送った要求ごとに成否を確認する)にしたい」という方針(所有者判断、同日)を受け、合成キー送信を介さず、実キーと同じ `TURN_ON_IME`/`TURN_OFF_IME`/`SWITCH_COMPOSITION_MODE` server round trip(`TipEditSession::SwitchInputModeAsync`)を要求ごとの nonce 付きで呼び、結果をこの共有メモリへ書き戻す経路を追加した。要求自体は共有メモリではなく登録ウィンドウメッセージ(`mozc::kDirectActuationMessageName`、宛先 `cmd_window_handle` もこの共有メモリで公開)で送る。詳細・未検証事項は 6-5。mozc-readable `exp/direct-actuation-channel`・awase `exp/mozc-direct-actuation` の両ブランチで実装中、どちらも未マージ。実機・CI 確認前 |

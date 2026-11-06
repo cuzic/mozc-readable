@@ -71,6 +71,7 @@ class TipEditSession {
       commands::Output new_output,
       std::optional<uint32_t> key_seq = std::nullopt);
 
+
   // Begins a sync edit session to invoke reconversion that is initialized by
   // the application.
   static bool ReconvertFromApplicationSync(TipTextService* text_service,
@@ -109,8 +110,17 @@ class TipEditSession {
 
   // Begins an async edit session to change input mode specified by
   // |native_mode|.
-  static bool SwitchInputModeAsync(TipTextService* text_service,
-                                   uint32_t mozc_mode);
+  //
+  // `direct_actuation_nonce` (version 6, EXPERIMENTAL, awase
+  // exp/direct-actuation-channel): when set, records the outcome via
+  // TipStatePublisher::SetLastCommandResult() once the edit session this
+  // call starts has actually run and applied the result (not when this
+  // function returns -- TF_ES_ASYNCDONTCARE may genuinely defer it), so a
+  // caller polling `last_cmd_nonce` also sees the up-to-date
+  // effective_open/tsf_open by the time it observes the nonce.
+  static bool SwitchInputModeAsync(
+      TipTextService* text_service, uint32_t mozc_mode,
+      std::optional<uint32_t> direct_actuation_nonce = std::nullopt);
 
   // Begins a sync edit session to retrieve the text from |range|.
   static bool GetTextSync(TipTextService* text_service, ITfRange* range,

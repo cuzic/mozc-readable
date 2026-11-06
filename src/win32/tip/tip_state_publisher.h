@@ -51,7 +51,7 @@ namespace win32 {
 namespace tsf {
 
 inline constexpr uint32_t kTipSharedStateMagic = 0x5A52444D;  // 'MDRZ'
-inline constexpr uint32_t kTipSharedStateVersion = 5;
+inline constexpr uint32_t kTipSharedStateVersion = 6;
 // Size of the version 2 layout. A block of this size left by an older DLL is
 // still written (version 2, first 48 bytes only).
 inline constexpr size_t kTipSharedStateV2Size = 48;
@@ -63,6 +63,12 @@ inline constexpr size_t kTipSharedStateV3Size = 80;
 // latest actually-released build (v3.35.6354-readable.1) -- offsets 0..111 are
 // frozen and must never be reordered or reused.
 inline constexpr size_t kTipSharedStateV4Size = 112;
+// Size of the version 5 layout. A block of this size left by an older DLL is
+// still written (version 5, first 160 bytes only). No released build has ever
+// shipped version 5 yet as of this writing -- see the version 6 comment below --
+// but the fallback chain is kept symmetric with v2/v3/v4 in case one does before
+// v6 ships.
+inline constexpr size_t kTipSharedStateV5Size = 160;
 
 // Layout is part of the external interface. Append only, bump the version on
 // incompatible changes. All fields are little-endian 32/64-bit integers.
@@ -97,6 +103,28 @@ inline constexpr size_t kTipSharedStateV4Size = 112;
 //   when they change, never pulsed.
 // - `key_eaten_count`/`key_passed_count` (offsets 152..159, diagnostics-only,
 //   never pulsed): key-downs the key sink ate vs. passed to the app.
+//
+// Version 6 (offsets 160..175, 16 bytes appended; offsets 0..159 unchanged,
+// EXPERIMENTAL -- not released, see awase's exp/direct-actuation-channel):
+// a direct-actuation request/ack channel, so a caller (awase) can ask this
+// TIP to turn the IME on/off without synthesizing a keystroke and inferring
+// success by polling. The request itself travels over a registered window
+// message (see tip_text_service.cc, kDirectActuationMessageName), not through
+// this shared memory; this struct only carries the *result* of the last
+// request this thread processed, the same way `server_ready` already reports
+// the outcome of a key-triggered server round trip:
+// - `last_cmd_nonce`/`last_cmd_result` (state, pulses): the nonce the caller
+//   passed in the request's WPARAM, and what happened to it (see
+//   TipDirectActuationResult). 0/kNone until the first request is processed.
+//   Written (and the change event pulsed) from the window-message handler,
+//   after the normal key-triggered Publish() for any state change the
+//   request itself caused has already happened -- so a reader that is
+//   waiting for `last_cmd_nonce == <the nonce it sent>` always also sees the
+//   up-to-date effective_open/tsf_open by the time it wakes.
+// - `cmd_window_handle` (diagnostics-only, never pulsed): the HWND of this
+//   thread's direct-actuation window, so the caller does not need to
+//   enumerate windows to find it. 0 before the window exists (not yet
+//   activated) or if window creation failed.
 // See readable/docs/shared-memory.md for the meaning of each field.
 struct TipSharedState {
   uint32_t magic;           // kTipSharedStateMagic
@@ -137,8 +165,16 @@ struct TipSharedState {
   uint64_t first_key_tick_ms;        // the first key-down counted after key_sink_focus_tick_ms (0 until one arrives)
   uint32_t key_eaten_count;          // key-downs counted in key_seq that the key sink ate (eaten = TRUE)
   uint32_t key_passed_count;         // key-downs counted in key_seq that the key sink did not eat (passed to the app)
+  // ---- version 6 (EXPERIMENTAL, unreleased) ----
+  uint32_t last_cmd_nonce;    // nonce of the last direct-actuation request this thread processed (0 = none yet)
+  uint32_t last_cmd_result;   // TipDirectActuationResult for last_cmd_nonce
+  uint64_t cmd_window_handle; // HWND (as uint64_t) of this thread's direct-actuation window, 0 if none
 };
-static_assert(sizeof(TipSharedState) == 160, "TipSharedState layout changed");
+static_assert(sizeof(TipSharedState) == 176, "TipSharedState layout changed");
+static_assert(offsetof(TipSharedState, last_cmd_nonce) == kTipSharedStateV5Size,
+              "TipSharedState layout changed");
+static_assert(offsetof(TipSharedState, cmd_window_handle) == 168,
+              "TipSharedState layout changed");
 static_assert(offsetof(TipSharedState, prefer_kana_input) == kTipSharedStateV4Size,
               "TipSharedState layout changed");
 static_assert(offsetof(TipSharedState, key_sink_focus_tick_ms) == 120,
@@ -181,6 +217,16 @@ enum class TipSubmitCause {
   kTerminated,  // ITfCompositionSink::OnCompositionTerminated
   kRevert,      // OnEndEdit: the composition range became empty
   kOther,       // a candidate window / indicator UI element
+};
+
+// The outcome of one direct-actuation request (version 6, EXPERIMENTAL). Numeric
+// values are part of the wire contract with awase and must not be renumbered.
+enum class TipDirectActuationResult : uint32_t {
+  kNone = 0,               // no request processed yet since Activate
+  kApplied = 1,            // SendCommand succeeded and the edit session ran
+  kNoFocusedContext = 2,   // this thread has no focused ITfContext right now
+  kSendCommandFailed = 3,  // the mozc session client rejected the command
+  kReservedBitsSet = 4,    // the request's reserved LPARAM bits were nonzero
 };
 
 class TipStatePublisher {
@@ -265,6 +311,20 @@ class TipStatePublisher {
   // handler flips prefer_kana_input (win32/base/keyevent_handler.cc). Written
   // when either value changes; pulses the change event.
   static void SetInputStyle(bool prefer_kana_input, bool toggle_enabled);
+
+  // Version 6 (EXPERIMENTAL): the HWND (as uint64_t; the caller casts to/from
+  // HWND) of this thread's direct-actuation window. Pass 0 when the window is
+  // destroyed (Deactivate) or could not be created. Diagnostics-only, never
+  // pulses: a reader that wants the window handle already has to read the
+  // block anyway to get thread_id/process_id to send to it.
+  static void PublishCommandWindow(uint64_t window_handle);
+
+  // Version 6 (EXPERIMENTAL): records the outcome of the direct-actuation
+  // request `nonce`. Called from the window-message handler after any
+  // resulting Publish() from the normal key-triggered path has already run,
+  // so a reader that wakes on `last_cmd_nonce == nonce` also sees the
+  // up-to-date effective_open/tsf_open. Always pulses (state field).
+  static void SetLastCommandResult(uint32_t nonce, TipDirectActuationResult result);
 };
 
 }  // namespace tsf
