@@ -43,6 +43,11 @@ import struct
 import sys
 import time
 
+# The CI console's default codepage (cp1252) cannot encode composed kana in the final text check
+# below; reconfigure stdout/stderr to UTF-8 (a known pitfall in this repo's CI harnesses).
+sys.stdout.reconfigure(encoding="utf-8")
+sys.stderr.reconfigure(encoding="utf-8")
+
 u32 = ctypes.windll.user32
 k32 = ctypes.windll.kernel32
 u32.CreateWindowExW.argtypes = [wt.DWORD, wt.LPCWSTR, wt.LPCWSTR, wt.DWORD, ctypes.c_int, ctypes.c_int,
