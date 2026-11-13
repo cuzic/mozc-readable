@@ -642,6 +642,7 @@ mozc_cc_library(
     target_compatible_with = ["@platforms//os:windows"],
     deps = [
         "//base/win32:win_sandbox",
+        "//bazel/win32:user32",
     ],
 )
 

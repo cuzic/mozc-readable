@@ -33,6 +33,8 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
+#include <iterator>
 #include <string>
 
 #include "base/win32/win_sandbox.h"
@@ -149,6 +151,43 @@ struct FlushResult {
   bool pulse = false;
 };
 
+// TEST ONLY (awase BUG-234 / ADR-293 fault injection, EXPERIMENTAL): when
+// nonzero, a change of effective_open/tsf_open is published this many ms late,
+// as if Mozc took that long to finish the open/close switch. Mozc itself
+// switches immediately; only what readers of this block see is late. The value
+// comes from HKCU\Software\mozc-readable\test_open_close_publish_delay_ms
+// (DWORD) or the environment variable
+// MOZC_READABLE_TEST_OPEN_CLOSE_PUBLISH_DELAY_MS, read once per process.
+// 0 / absent (the default) disables it.
+constexpr wchar_t kTestRegistryKey[] = L"Software\\mozc-readable";
+constexpr wchar_t kTestDelayValue[] = L"test_open_close_publish_delay_ms";
+constexpr wchar_t kTestDelayEnv[] =
+    L"MOZC_READABLE_TEST_OPEN_CLOSE_PUBLISH_DELAY_MS";
+constexpr DWORD kTestDelayMaxMs = 10000;
+
+DWORD TestOpenClosePublishDelayMs() {
+  static const DWORD delay_ms = [] {
+    DWORD value = 0;
+    DWORD size = sizeof(value);
+    if (::RegGetValueW(HKEY_CURRENT_USER, kTestRegistryKey, kTestDelayValue,
+                       RRF_RT_REG_DWORD, nullptr, &value,
+                       &size) != ERROR_SUCCESS) {
+      value = 0;
+      wchar_t buffer[16] = {};
+      const DWORD len = ::GetEnvironmentVariableW(kTestDelayEnv, buffer,
+                                                  static_cast<DWORD>(std::size(buffer)));
+      if (len > 0 && len < std::size(buffer)) {
+        value = static_cast<DWORD>(std::wcstoul(buffer, nullptr, 10));
+      }
+    }
+    return value > kTestDelayMaxMs ? kTestDelayMaxMs : value;
+  }();
+  return delay_ms;
+}
+
+void CALLBACK OnTestDelayTimer(HWND, UINT, UINT_PTR, DWORD);
+void Pulse();
+
 // Per-thread mapping. TSF threads are long-lived; the view is released when
 // the thread exits (or the DLL is unloaded).
 class ThreadSlot {
@@ -169,70 +208,125 @@ class ThreadSlot {
   // (`wrote`). The caller pulses the event only when `pulse` is set: the first
   // write, or a change of the state fields (the write and the pulse are decided
   // separately, ADR-267 D6).
-  FlushResult Flush() {
+  // `release_deferred` publishes a deferred open/close change now (the test
+  // delay timer fired, or the TIP is being deactivated).
+  FlushResult Flush(bool release_deferred = false) {
     TipSharedState* s = Get();
     if (s == nullptr) return {};
-    if (published_ && last_ == pending_) return {};
-    const bool pulse = !published_ || !last_.SameState(pending_);
+    Snapshot out = pending_;
+    if (published_) DeferOpenCloseForTest(out, release_deferred);
+    if (published_ && last_ == out) return {};
+    const bool pulse = !published_ || !last_.SameState(out);
     volatile LONG* seq = reinterpret_cast<volatile LONG*>(&s->seq);
     ::InterlockedIncrement(seq);  // odd: writing (full barrier)
-    s->effective_open = pending_.effective_open;
-    s->effective_mode = pending_.effective_mode;
-    s->tsf_open = pending_.tsf_open;
-    s->tsf_mode = pending_.tsf_mode;
-    s->active = pending_.active;
+    s->effective_open = out.effective_open;
+    s->effective_mode = out.effective_mode;
+    s->tsf_open = out.tsf_open;
+    s->tsf_mode = out.tsf_mode;
+    s->active = out.active;
     s->update_tick_ms = ::GetTickCount64();
     if (size_ >= kTipSharedStateV3Size) {
       // An older, 48 byte block is never touched beyond its end (ADR-267 D9).
-      s->phase = pending_.phase;
-      s->candidate_category = pending_.candidate_category;
-      s->preedit_utf16_len = pending_.preedit_utf16_len;
-      s->preedit_cursor = pending_.preedit_cursor;
-      s->key_seq = pending_.key_seq;
-      s->scope_forced_mode = pending_.scope_forced_mode;
-      s->server_ready = pending_.server_ready;
-      s->composition_key_seq = pending_.composition_key_seq;
+      s->phase = out.phase;
+      s->candidate_category = out.candidate_category;
+      s->preedit_utf16_len = out.preedit_utf16_len;
+      s->preedit_cursor = out.preedit_cursor;
+      s->key_seq = out.key_seq;
+      s->scope_forced_mode = out.scope_forced_mode;
+      s->server_ready = out.server_ready;
+      s->composition_key_seq = out.composition_key_seq;
     }
     if (size_ >= kTipSharedStateV4Size) {
       // Likewise an 80 byte (version 3) block is never touched beyond its end.
-      s->composition_start_count = pending_.composition_start_count;
-      s->submit_end_edit_count = pending_.submit_end_edit_count;
-      s->submit_terminated_count = pending_.submit_terminated_count;
-      s->revert_count = pending_.revert_count;
-      s->submit_other_count = pending_.submit_other_count;
-      s->edit_session_fail_count = pending_.edit_session_fail_count;
-      s->diag_flags = pending_.diag_flags;
-      s->update_context_id = pending_.update_context_id;
+      s->composition_start_count = out.composition_start_count;
+      s->submit_end_edit_count = out.submit_end_edit_count;
+      s->submit_terminated_count = out.submit_terminated_count;
+      s->revert_count = out.revert_count;
+      s->submit_other_count = out.submit_other_count;
+      s->edit_session_fail_count = out.edit_session_fail_count;
+      s->diag_flags = out.diag_flags;
+      s->update_context_id = out.update_context_id;
     }
     if (size_ >= kTipSharedStateV5Size) {
       // Likewise a 112 byte (version 4) block is never touched beyond its end
       // (ADR-267 D9). All of version 5 (state + diagnostics) is one size: it was
       // never released at an intermediate size, so there is no partial-version-5
       // block to preserve (unlike versions 2/3/4, see the header comment).
-      s->prefer_kana_input = pending_.prefer_kana_input;
+      s->prefer_kana_input = out.prefer_kana_input;
       s->use_romaji_key_to_toggle_input_style =
-          pending_.use_romaji_key_to_toggle_input_style;
-      s->key_sink_focus_tick_ms = pending_.key_sink_focus_tick_ms;
-      s->key_sink_blur_tick_ms = pending_.key_sink_blur_tick_ms;
-      s->thread_focus_tick_ms = pending_.thread_focus_tick_ms;
-      s->first_key_tick_ms = pending_.first_key_tick_ms;
-      s->key_eaten_count = pending_.key_eaten_count;
-      s->key_passed_count = pending_.key_passed_count;
+          out.use_romaji_key_to_toggle_input_style;
+      s->key_sink_focus_tick_ms = out.key_sink_focus_tick_ms;
+      s->key_sink_blur_tick_ms = out.key_sink_blur_tick_ms;
+      s->thread_focus_tick_ms = out.thread_focus_tick_ms;
+      s->first_key_tick_ms = out.first_key_tick_ms;
+      s->key_eaten_count = out.key_eaten_count;
+      s->key_passed_count = out.key_passed_count;
     }
     if (size_ >= sizeof(TipSharedState)) {
       // Version 6 (EXPERIMENTAL): likewise a 160 byte (version 5) block is
       // never touched beyond its end.
-      s->last_cmd_nonce = pending_.last_cmd_nonce;
-      s->last_cmd_result = pending_.last_cmd_result;
-      s->cmd_window_handle = pending_.cmd_window_handle;
+      s->last_cmd_nonce = out.last_cmd_nonce;
+      s->last_cmd_result = out.last_cmd_result;
+      s->cmd_window_handle = out.cmd_window_handle;
     }
     ::InterlockedIncrement(seq);  // even: stable (full barrier)
-    last_ = pending_;
+    last_ = out;
     published_ = true;
     return {true, pulse};
   }
 
+  // Called by the test delay timer (same thread). The timer is one-shot.
+  void OnDelayTimer() {
+    if (delay_timer_ != 0) {
+      ::KillTimer(nullptr, delay_timer_);
+      delay_timer_ = 0;
+    }
+    if (Flush().pulse) Pulse();
+  }
+
  private:
+  // TEST ONLY: while a change of effective_open/tsf_open is younger than
+  // TestOpenClosePublishDelayMs(), publish the previous open/mode values and
+  // the previous direct-actuation ack instead (the ack is never published
+  // before the state it reports, see SetLastCommandResult). Every other field
+  // is written as usual. A newer change restarts the delay.
+  void DeferOpenCloseForTest(Snapshot& out, bool release) {
+    const DWORD delay_ms = TestOpenClosePublishDelayMs();
+    if (delay_ms == 0) return;
+    const bool changed = pending_.effective_open != last_.effective_open ||
+                         pending_.tsf_open != last_.tsf_open;
+    if (!changed || release) {
+      deferring_ = false;
+      return;
+    }
+    const ULONGLONG now = ::GetTickCount64();
+    if (!deferring_ || deferred_effective_open_ != pending_.effective_open ||
+        deferred_tsf_open_ != pending_.tsf_open) {
+      deferring_ = true;
+      deferred_since_ms_ = now;
+      deferred_effective_open_ = pending_.effective_open;
+      deferred_tsf_open_ = pending_.tsf_open;
+    }
+    const ULONGLONG elapsed = now - deferred_since_ms_;
+    if (elapsed >= delay_ms) {
+      deferring_ = false;
+      return;
+    }
+    out.effective_open = last_.effective_open;
+    out.effective_mode = last_.effective_mode;
+    out.tsf_open = last_.tsf_open;
+    out.tsf_mode = last_.tsf_mode;
+    out.last_cmd_nonce = last_.last_cmd_nonce;
+    out.last_cmd_result = last_.last_cmd_result;
+    if (delay_timer_ == 0) {
+      // A thread timer: this thread dispatches messages (it is a TSF UI
+      // thread). Re-armed for the remainder if it fires a little early.
+      delay_timer_ = ::SetTimer(nullptr, 0,
+                                static_cast<UINT>(delay_ms - elapsed),
+                                OnTestDelayTimer);
+    }
+  }
+
   TipSharedState* Get() {
     if (state_ != nullptr || tried_) return state_;
     tried_ = true;
@@ -303,11 +397,21 @@ class ThreadSlot {
   bool published_ = false;
   Snapshot pending_;
   Snapshot last_;
+  // TEST ONLY (DeferOpenCloseForTest).
+  bool deferring_ = false;
+  ULONGLONG deferred_since_ms_ = 0;
+  uint32_t deferred_effective_open_ = 0;
+  uint32_t deferred_tsf_open_ = 0;
+  UINT_PTR delay_timer_ = 0;
 };
 
 ThreadSlot& CurrentSlot() {
   thread_local ThreadSlot slot;
   return slot;
+}
+
+void CALLBACK OnTestDelayTimer(HWND, UINT, UINT_PTR, DWORD) {
+  CurrentSlot().OnDelayTimer();
 }
 
 // The VKs of the key-downs CountKeyDown() counted, oldest first, that no
@@ -387,7 +491,9 @@ void TipStatePublisher::SetActive(bool active) {
     p.scope_forced_mode = 0;
     p.composition_key_seq = 0;
   }
-  if (slot.Flush().pulse) Pulse();
+  // A deactivated TIP publishes its last open/close state at once (the test
+  // delay of DeferOpenCloseForTest does not outlive it).
+  if (slot.Flush(/*release_deferred=*/!active).pulse) Pulse();
 }
 
 void TipStatePublisher::SetComposition(const TipCompositionState& composition) {
